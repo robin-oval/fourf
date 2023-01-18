@@ -50,14 +50,14 @@ from compas.utilities import pairwise
 ### INPUTS ###
 
 r = 2.5 # circumcircle radius [m]
-pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2 # triangle parameterisation angle [radians]
-wid_angles = pi / 6, pi / 6, pi / 6 # triangle to hexagon parameterisation angle [radians]
-offset1, offset2 = 0.9, 0.95 # offset factor the unsupported and supported edges inward respectively [-]
-target_edge_length = 0.25 # [m]
+pos_angles = radians(90), radians(235), radians(305) # triangle parameterisation angle [radians]
+wid_angles = radians(7.5), radians(7.5), radians(7.5) # triangle to hexagon parameterisation angle [radians]
+offset1, offset2 = 0.85, 0.95 # offset factor the unsupported and supported edges inward respectively [-]
+target_edge_length = 0.15 # [m]
 support_raised_height = [0.0, 0.0, 0.0] # raised height of each support [m]
 
-brick_length, brick_width, brick_thickness = 0.25, 0.125, 0.0625 # [m]
-brick_layers = 1 # [-]
+brick_length, brick_width, brick_thickness = 0.24, 0.12, 0.03 # [m]
+brick_layers = 3 # [-]
 brick_density = 12.0 # [kN/m3]
 comp_strength = 6.0 # [MPa]
 
@@ -77,12 +77,12 @@ weight_node_target_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
 add_edge_length_goal = False
-factor_edge_length = 1.2 # multplicative factor of average length of planar transverse edge [-]
+factor_edge_length = 1.5 # multplicative factor of average length of planar transverse edge [-]
 weight_edge_length_goal = 1.0
 
 # vertex projection goal to cover the desire space
 add_horizontal_projection_goal = True
-weight_projection_goal = 10.0
+weight_projection_goal = 1.0
 
 # support node residual force to control the formation of creases and corrugations
 add_node_residual_goal = False
@@ -96,7 +96,7 @@ t_start, t_end, t_exp = radians(20), radians(40), 1.0 # minimum and maximum reac
 weight_node_tangent_goal = 1.0
 # via an edge slope angle goal
 add_edge_slope_goal = True
-s_start, s_end, s_exp = radians(30), radians(80), 1.0 # minimum and maximum reaction forces [kN] and variation exponent [-]
+s_start, s_end, s_exp = radians(70), radians(70), 1.0 # minimum and maximum reaction forces [kN] and variation exponent [-]
 weight_edge_slope_goal = 1.0
 
 view = True
@@ -335,7 +335,7 @@ print('Brick course width of mean {} m and standard deviation {} m'.format(round
 if view:
     viewer = Viewer(width=1600, height=900, show_grid=False)
 
-    # viewer.add(mesh)
+    viewer.add(mesh)
 
     viewer.add(network,
                edgewidth=(0.003, 0.02),
