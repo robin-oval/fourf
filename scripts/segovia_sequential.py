@@ -49,56 +49,59 @@ from compas.utilities import pairwise
 
 ### INPUTS ###
 
-r = 2.5 # circumcircle radius [m]
-pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2 # triangle parameterisation angle [radians]
-wid_angles = pi / 6, pi / 6, pi / 6 # triangle to hexagon parameterisation angle [radians]
-offset1, offset2 = 0.9, 0.95 # offset factor the unsupported and supported edges inward respectively [-]
-target_edge_length = 0.25 # [m]
-support_raised_height = [0.0, 0.0, 0.0] # raised height of each support [m]
+r = 2.5  # circumcircle radius [m]
+pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2  # triangle parameterisation angle [radians]
+wid_angles = pi / 6, pi / 6, pi / 6  # triangle to hexagon parameterisation angle [radians]
+offset1, offset2 = 0.9, 0.95  # offset factor the unsupported and supported edges inward respectively [-]
+target_edge_length = 0.25  # [m]
+support_raised_height = [0.0, 0.0, 0.0]  # raised height of each support [m]
 
-brick_length, brick_width, brick_thickness = 0.25, 0.125, 0.0625 # [m]
+brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04 # [m]
 brick_layers = 1  # [-]
 brick_density = 12.0  # [kN/m3]
 comp_strength = 6.0  # [MPa]
 
-dead_load = -1.0 # dead load [kN/m2]
-pz = - (brick_density * brick_thickness * brick_layers) + dead_load # vertical load (approximated self-weight + uniform dead load) [kN/m2]
-q0 = -1.0 # initial force densities [kN/m]
+dead_load = -1.0  # dead load [kN/m2]
+pz = - (brick_density * brick_thickness * brick_layers) + dead_load  # vertical load (approximated self-weight + uniform dead load) [kN/m2]
+q0 = -1.0  # initial force densities [kN/m]
 
-opt = LBFGSB # optimization solver
-qmin, qmax = None, -1e-1 # bound on force densities [kN/m]
-maxiter = 1000 # maximum number of iterations
-tol = 1e-3 # optimization tolerance
+opt = LBFGSB  # optimization solver
+qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
+maxiter = 1000  # maximum number of iterations
+tol = 1e-3  # optimization tolerance
 
 # aim for target positions
 add_node_target_goal = True
-cross_height = 2.5 # height of spine cross [m]
+cross_height = 2.5  # height of spine cross [m]
 weight_node_target_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
 add_edge_length_goal = False
-factor_edge_length = 1.2 # multplicative factor of average length of planar transverse edge [-]
+factor_edge_length = 1.2  # multplicative factor of average length of planar transverse edge [-]
 weight_edge_length_goal = 1.0
 
 # vertex projection goal to cover the desire space
-add_horizontal_projection_goal = True
+add_horizontal_projection_goal = False
 weight_projection_goal = 10.0
 
 # support node residual force to control the formation of creases and corrugations
 add_node_residual_goal = False
-rmin, rmax, rexp = 0.4, 3.0, 2.0 # minimum and maximum reaction forces [kN] and variation exponent [-]
+rmin, rmax, rexp = 0.4, 3.0, 2.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
 weight_node_residual_goal = 1.0
 
-# shape the profile of the polyedges running from the singularity to the unspupported boundary
+# shape the profile of the polyedges running from the singularity to the unsupported boundary
 # via a node tangent angle goal
 add_node_tangent_goal = False
-t_start, t_end, t_exp = radians(20), radians(40), 1.0 # minimum and maximum reaction forces [kN] and variation exponent [-]
+t_start, t_end, t_exp = radians(20), radians(40), 1.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
 weight_node_tangent_goal = 1.0
+
 # via an edge slope angle goal
-add_edge_slope_goal = True
-s_start, s_end, s_exp = radians(30), radians(80), 1.0 # minimum and maximum reaction forces [kN] and variation exponent [-]
+add_edge_slope_goal = False
+s_start, s_end, s_exp = radians(30), radians(80), 1.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
 weight_edge_slope_goal = 1.0
 
+optimize = True
+results = False
 view = True
 export = False
 
@@ -161,6 +164,9 @@ for pkey in mesh.polyedges():
         for vkey in mesh.polyedge_vertices(pkey):
             network.node[vkey]['z'] = support_raised_height[i]
         i += 1
+
+### FDM  ###
+eqnetwork = fdm(network)
 
 ### PARAMETERS ###
 
@@ -258,90 +264,94 @@ loss = Loss(
 
 ### FORM FINDING ###
 
-network = constrained_fdm(network,
-                             optimizer=opt(),
-                             parameters=parameters,
-                             loss=loss,
-                             maxiter=maxiter,
-                             tol=tol,
-                             )
+if optimize:
+    network = constrained_fdm(network,
+                              optimizer=opt(),
+                              parameters=parameters,
+                              loss=loss,
+                              maxiter=maxiter,
+                              tol=tol
+                              )
 
 ### RESULTS ###
 
-# new meshes to compute areas
-mesh_ff_xyz = mesh.copy() # mesh that follows the form found network
-mesh_ff_xy = mesh.copy() # mesh that follows the projection of the form found network
-for vkey in mesh.vertices():
-    for coord, new_coord in zip('xyz', network.node_coordinates(vkey)):
-        mesh_ff_xyz.vertex[vkey][coord] = new_coord
-        if not coord == 'z':
-            mesh_ff_xy.vertex[vkey][coord] = new_coord
+if results:
+    # new meshes to compute areas
+    mesh_ff_xyz = mesh.copy() # mesh that follows the form found network
+    mesh_ff_xy = mesh.copy() # mesh that follows the projection of the form found network
+    for vkey in mesh.vertices():
+        for coord, new_coord in zip('xyz', network.node_coordinates(vkey)):
+            mesh_ff_xyz.vertex[vkey][coord] = new_coord
+            if not coord == 'z':
+                mesh_ff_xy.vertex[vkey][coord] = new_coord
 
-# edge force densities
-sorted_fds = sorted([network.edge_forcedensity(edge) for edge in network.edges()])
-print('Minimum force density of {} kN/m and maximum force density of {} kN/m'.format(round(sorted_fds[0], 2), round(sorted_fds[-1], 2)))
-# edge lengths
-sorted_lengths = sorted([network.edge_length(*edge) for edge in network.edges()])
-print('Minimum length of {} m and maximum length of {} m'.format(round(sorted_lengths[0], 2), round(sorted_lengths[-1], 2)))
+    # edge force densities
+    sorted_fds = sorted([network.edge_forcedensity(edge) for edge in network.edges()])
+    print('Minimum force density of {} kN/m and maximum force density of {} kN/m'.format(round(sorted_fds[0], 2), round(sorted_fds[-1], 2)))
+    # edge lengths
+    sorted_lengths = sorted([network.edge_length(*edge) for edge in network.edges()])
+    print('Minimum length of {} m and maximum length of {} m'.format(round(sorted_lengths[0], 2), round(sorted_lengths[-1], 2)))
 
-# vault surface to build
-mesh_area = mesh_ff_xyz.area()
-brick_area = brick_length * brick_width # top/bottom surface - include mortar thickness as percentage?
-print('Surface area of {} m2, requiring about {} bricks'.format(round(mesh_area, 1), int(mesh_area / brick_area)))
-max_z = max([network.node[node]['z'] for node in network.nodes()])
-print('Maximum height to reach of {} m'.format(round(max_z, 2)))
+    # vault surface to build
+    mesh_area = mesh_ff_xyz.area()
+    brick_area = brick_length * brick_width # top/bottom surface - include mortar thickness as percentage?
+    print('Surface area of {} m2, requiring about {} bricks'.format(round(mesh_area, 1), int(mesh_area / brick_area)))
+    max_z = max([network.node[node]['z'] for node in network.nodes()])
+    print('Maximum height to reach of {} m'.format(round(max_z, 2)))
 
-# space use - height, area and volume
-box = bounding_box([network.node_coordinates(node) for node in network.nodes()])
-dx, dy, dz = box[1][0] - box[0][0], box[3][1] - box[0][1], box[4][2] - box[0][2]
-print('Bounding box of {} m x {} m x {} m'.format(round(dx, 1), round(dy, 1), round(dz, 1)))
-apex = max([network.node[node]['z'] for node in network.nodes() if network.degree(node) == 6])
-print('Height of spine cross of {} m'.format(round(apex, 2)))
-mesh_area_xy = mesh_ff_xyz.area()
-print('Vault covered area {} m2'.format(round(mesh_area_xy, 1)))
-comfort_height = 2.0
-comfort_surface = sum([mesh_ff_xy.vertex_area(vkey) for vkey in mesh.vertices() if mesh_ff_xyz.vertex_coordinates(vkey)[2] > comfort_height])
-print('Vault covered area of {} m2 above {} m'.format(round(comfort_surface, 1), comfort_height))
+    # space use - height, area and volume
+    box = bounding_box([network.node_coordinates(node) for node in network.nodes()])
+    dx, dy, dz = box[1][0] - box[0][0], box[3][1] - box[0][1], box[4][2] - box[0][2]
+    print('Bounding box of {} m x {} m x {} m'.format(round(dx, 1), round(dy, 1), round(dz, 1)))
+    apex = max([network.node[node]['z'] for node in network.nodes() if network.degree(node) == 6])
+    print('Height of spine cross of {} m'.format(round(apex, 2)))
+    mesh_area_xy = mesh_ff_xyz.area()
+    print('Vault covered area {} m2'.format(round(mesh_area_xy, 1)))
+    comfort_height = 2.0
+    comfort_surface = sum([mesh_ff_xy.vertex_area(vkey) for vkey in mesh.vertices() if mesh_ff_xyz.vertex_coordinates(vkey)[2] > comfort_height])
+    print('Vault covered area of {} m2 above {} m'.format(round(comfort_surface, 1), comfort_height))
 
-# structural design
-#forces on foundations
-reactions = []
-for pkey, ptype in pkey2type.items():
-    if ptype == 'support':
-        reactions.append(sum_vectors([network.node_reaction(node) for node in mesh.polyedge_vertices(pkey)]))
-reactions = [(length_vector_xy(xyz), xyz[2]) for xyz in reactions]
-print('Horizontal and vertical action forces on supports {} kN'.format(reactions))
-# forces
-sorted_forces = sorted([network.edge_force(edge) for edge in network.edges()])
-print('Minimum force of {} kN and maximum force of {} kN'.format(round(sorted_forces[0], 2), round(sorted_forces[-1], 2)))
-# stresses
-edge2stress = {}
-for u, v in network.edges():
-    force = network.edge_force(edge)
-    a = mesh.edge_midpoint(mesh.face_vertex_after(mesh.halfedge[u][v], v, 1), mesh.face_vertex_after(mesh.halfedge[u][v], v, 2)) if mesh.halfedge[u][v] is not None else mesh.edge_midpoint(u, v)
-    b = mesh.edge_midpoint(mesh.face_vertex_after(mesh.halfedge[v][u], u, 1), mesh.face_vertex_after(mesh.halfedge[v][u], u, 2)) if mesh.halfedge[v][u] is not None else mesh.edge_midpoint(v, u)
-    width = distance_point_point(a, b) / 2
-    edge2stress[(u, v)] = force / (width * brick_thickness * brick_layers)
-sorted_sresses = sorted([stress for stress in edge2stress.values()])
-print('Minimum stress of {} MPa and maximum stress of {} MPa'.format(round(sorted_sresses[0] / 1000, 2), round(sorted_sresses[-1] / 1000, 2)))
-print('Minimum stress utilization of {} and maximum stress utilization of {} '.format(round(sorted_sresses[0] / 1000 / comp_strength, 2), round(sorted_sresses[-1] / 1000 / comp_strength, 2)))
+    # structural design
+    #forces on foundations
+    reactions = []
+    for pkey, ptype in pkey2type.items():
+        if ptype == 'support':
+            reactions.append(sum_vectors([network.node_reaction(node) for node in mesh.polyedge_vertices(pkey)]))
+    reactions = [(length_vector_xy(xyz), xyz[2]) for xyz in reactions]
+    print('Horizontal and vertical action forces on supports {} kN'.format(reactions))
+    # forces
+    sorted_forces = sorted([network.edge_force(edge) for edge in network.edges()])
+    print('Minimum force of {} kN and maximum force of {} kN'.format(round(sorted_forces[0], 2), round(sorted_forces[-1], 2)))
+    # stresses
+    edge2stress = {}
+    for u, v in network.edges():
+        force = network.edge_force(edge)
+        a = mesh.edge_midpoint(mesh.face_vertex_after(mesh.halfedge[u][v], v, 1), mesh.face_vertex_after(mesh.halfedge[u][v], v, 2)) if mesh.halfedge[u][v] is not None else mesh.edge_midpoint(u, v)
+        b = mesh.edge_midpoint(mesh.face_vertex_after(mesh.halfedge[v][u], u, 1), mesh.face_vertex_after(mesh.halfedge[v][u], u, 2)) if mesh.halfedge[v][u] is not None else mesh.edge_midpoint(v, u)
+        width = distance_point_point(a, b) / 2
+        edge2stress[(u, v)] = force / (width * brick_thickness * brick_layers)
+    sorted_sresses = sorted([stress for stress in edge2stress.values()])
+    print('Minimum stress of {} MPa and maximum stress of {} MPa'.format(round(sorted_sresses[0] / 1000, 2), round(sorted_sresses[-1] / 1000, 2)))
+    print('Minimum stress utilization of {} and maximum stress utilization of {} '.format(round(sorted_sresses[0] / 1000 / comp_strength, 2), round(sorted_sresses[-1] / 1000 / comp_strength, 2)))
 
-# vaulting
-brick_course_widths = [network.edge_length(*edge) for edge in edges_ortho]
-print('Brick course width of mean {} m and standard deviation {} m'.format(round(mean(brick_course_widths), 2), round(std(brick_course_widths), 2)))
+    # vaulting
+    brick_course_widths = [network.edge_length(*edge) for edge in edges_ortho]
+    print('Brick course width of mean {} m and standard deviation {} m'.format(round(mean(brick_course_widths), 2), round(std(brick_course_widths), 2)))
 
 ### VIEWER ###
 
 if view:
     viewer = Viewer(width=1600, height=900, show_grid=False)
 
-    # viewer.add(mesh)
+    viewer.add(mesh)
+    viewer.add(eqnetwork, as_wireframe=True)
 
-    viewer.add(network,
-               edgewidth=(0.003, 0.02),
-               edgecolor="force",
-               reactionscale=0.25,
-               loadscale=0.5)
+    if optimize:
+        viewer.add(network,
+                   edgewidth=(0.003, 0.02),
+                   edgecolor="force",
+                   reactionscale=0.25,
+                   loadscale=0.5)
 
     viewer.show()
 
