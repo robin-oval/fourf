@@ -1,10 +1,11 @@
-from math import pi
+from math import pi, radians, degrees
 
-from numpy import mean, std, radians
+from numpy import mean, std
 
 from operator import itemgetter
 
-from compas.geometry import distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
+from compas.geometry import Line, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
+from compas.geometry import add_vectors, scale_vector, normalize_vector
 
 from compas_quad.datastructures import CoarseQuadMesh
 from compas_quad.coloring import quad_mesh_polyedge_2_coloring
@@ -19,9 +20,9 @@ from fourf.view import view_f4
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
 from jax_fdm.optimization import LBFGSB, SLSQP
-from jax_fdm.parameters import EdgeForceDensityParameter
-from jax_fdm.goals import NodePointGoal, EdgeLengthGoal, EdgeDirectionGoal, NodeTangentAngleGoal, NodeXCoordinateGoal, NodeYCoordinateGoal, NodeResidualForceGoal
-from jax_fdm.constraints import EdgeLengthConstraint, EdgeForceConstraint
+from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
+from jax_fdm.goals import NodePointGoal, EdgeLengthGoal, EdgeDirectionGoal, NodeTangentAngleGoal, NodeXCoordinateGoal, NodeYCoordinateGoal, NodeResidualForceGoal, NodeZCoordinateGoal, NodePlaneGoal
+from jax_fdm.constraints import EdgeLengthConstraint, EdgeForceConstraint, NodeZCoordinateConstraint
 from jax_fdm.losses import SquaredError, Loss
 from jax_fdm.visualization import Viewer
 
@@ -65,14 +66,17 @@ dead_load = -1.0  # dead load [kN/m2]
 pz = - (brick_density * brick_thickness * brick_layers) + dead_load  # vertical load (approximated self-weight + uniform dead load) [kN/m2]
 q0 = -1.0  # initial force densities [kN/m]
 
-opt = LBFGSB  # optimization solver
+opt = SLSQP  # LBFGSB  # optimization solver
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
+add_supports_as_parameters = True
+ctol = 0.25  # bound on supports X and Y positions
 maxiter = 1000  # maximum number of iterations
-tol = 1e-3  # optimization tolerance
+tol = 1e-6  # optimization tolerance
 
 # aim for target positions
 add_node_target_goal = True
-cross_height = 2.5  # height of spine cross [m]
+cross_height = 2.2  # height of spine cross [m]
+perimeter_height = 2.8  # height of perimetral arches [m]
 weight_node_target_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
@@ -80,9 +84,13 @@ add_edge_length_goal = False
 factor_edge_length = 1.2  # multplicative factor of average length of planar transverse edge [-]
 weight_edge_length_goal = 1.0
 
+# keep spine planar
+add_spine_planarity_goal = True
+weight_spine_planarity_goal = 1.0
+
 # vertex projection goal to cover the desire space
 add_horizontal_projection_goal = False
-weight_projection_goal = 10.0
+weight_projection_goal = 0.1
 
 # support node residual force to control the formation of creases and corrugations
 add_node_residual_goal = False
@@ -92,17 +100,23 @@ weight_node_residual_goal = 1.0
 # shape the profile of the polyedges running from the singularity to the unsupported boundary
 # via a node tangent angle goal
 add_node_tangent_goal = False
-t_start, t_end, t_exp = radians(20), radians(40), 1.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
+t_start, t_end, t_exp = radians(40), radians(20), 1.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
 weight_node_tangent_goal = 1.0
 
 # via an edge slope angle goal
-add_edge_slope_goal = False
-s_start, s_end, s_exp = radians(30), radians(80), 1.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
+add_edge_slope_goal = True
+s_start, s_end, s_exp = radians(60), radians(20), 1.0  # minimum and maximum angles and variation exponent [-]
 weight_edge_slope_goal = 1.0
 
+# shape the profile of the polyedges running from the singularity to the unsupported boundary
+add_edge_length_profile_goal = True
+weight_edge_length_profile_goal = 1.0
+
+# controls
+add_constraints = True
 optimize = True
-results = False
 view = True
+results = False
 export = False
 
 ### COARSE MESH ###
@@ -113,7 +127,6 @@ mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
 ### DENSE MESH ###
 
 mesh = quadmesh_densification(mesh, target_edge_length)
-print(mesh)
 
 ### ELEMENT TYPES ###
 
@@ -130,7 +143,6 @@ for pkey, ptype in pkey2type.items():
         color_ortho = 1 - color_paral
         break
 edges_ortho = [edge for edge, color in edge2color.items() if color == color_ortho]
-
 
 ### ASSEMBLY SEQUENCE ###
 
@@ -156,6 +168,34 @@ mesh.smooth_centroid(fixed=mesh.vertices_on_boundary(), kmax=100)
 
 network = mesh_to_fdnetwork(mesh, supports, pz, q0)
 
+snode = [node for node in network.nodes() if network.degree(node) == 6].pop()
+
+pnodes = []
+for pkey, polyedge in mesh.polyedges(True):
+    if snode in polyedge:
+        for node in polyedge:
+            if mesh.is_vertex_on_boundary(node) and not network.is_node_support(node):
+                pnodes.append(node)
+
+# profile curves from singularity to unsupported boundary
+profile_polyedges = []
+for pkey, polyedge in mesh.polyedges(data=True):
+        cdt1 = mesh.vertex_degree(polyedge[0]) == 6 and polyedge[-1] not in supports
+        cdt2 = mesh.vertex_degree(polyedge[-1]) == 6 and polyedge[0] not in supports
+        if cdt1 or cdt2:
+            polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
+            profile_polyedges.append(polyedge)
+
+
+# spline polyedges from singularity to supported boundary
+spine_polyedges = []
+for pkey, polyedge in mesh.polyedges(data=True):
+        cdt1 = mesh.vertex_degree(polyedge[0]) == 6 and polyedge[-1] in supports
+        cdt2 = mesh.vertex_degree(polyedge[-1]) == 6 and polyedge[0] in supports
+        if cdt1 or cdt2:
+            polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
+            spine_polyedges.append(polyedge)
+
 ### SUPPORT POSITIONING ###
 
 i = 0
@@ -166,6 +206,7 @@ for pkey in mesh.polyedges():
         i += 1
 
 ### FDM  ###
+
 eqnetwork = fdm(network)
 
 ### PARAMETERS ###
@@ -176,6 +217,13 @@ for edge in network.edges():
     parameter = EdgeForceDensityParameter(edge, qmin, qmax)
     parameters.append(parameter)
 
+if add_supports_as_parameters:
+    for node in network.nodes_anchors():
+        x, y, z = network.node_coordinates(node)
+        for coordinate, parameter in zip((x, y), (NodeAnchorXParameter, NodeAnchorYParameter)):
+            parameter = parameter(node, coordinate - ctol, coordinate + ctol)
+            parameters.append(parameter)
+
 ### GOALS ###
 
 # target height of spine cross
@@ -185,15 +233,37 @@ if add_node_target_goal:
         if network.degree(node) == 6:
             x, y, z = network.node_coordinates(node)
             goal = NodePointGoal(node, target=[x, y, cross_height], weight=weight_node_target_goal)
+            # goal = NodeZCoordinateGoal(node, target=cross_height, weight=weight_node_target_goal)
             goals_target.append(goal)
+
+    # for node in pnodes:
+    #     x, y, z = network.node_coordinates(node)
+    #     goal = NodeZCoordinateGoal(node, target=perimeter_height, weight=0.0)
+    #     goals_target.append(goal)
+
     print('{} NodePointGoal'.format(len(goals_target)))
+
+# spline planarity
+assert len(spine_polyedges) == 3
+goals_spine_planarity = []
+if add_spine_planarity_goal:
+    for polyedge in spine_polyedges:
+        vector = mesh.edge_vector(polyedge[0], polyedge[1])
+        origin = mesh.vertex_coordinates(polyedge[0])
+        normal = cross_vectors(vector, [0.0, 0.0, 1.0])
+        plane = (origin, normal)
+        for node in polyedge[1:]:
+            goal = NodePlaneGoal(node, plane, weight_spine_planarity_goal)
+            goals_spine_planarity.append(goal)
+    print('{} SpinePlanarityGoal'.format(len(goals_spine_planarity)))
+
 
 # constant brick course width
 goals_length = []
 if add_edge_length_goal:
     target_length = factor_edge_length * mean([mesh.edge_length(*edge) for edge in edges_ortho])
     for edge in network.edges():
-        if edge2color[edge] == color_ortho: 
+        if edge2color[edge] == color_ortho:
             goal = EdgeLengthGoal(edge, target=target_length, weight=weight_edge_length_goal)
             goals_length.append(goal)
     print('{} EdgeLengthGoal'.format(len(goals_length)))
@@ -220,38 +290,50 @@ if add_node_residual_goal:
             goals_residual.append(goal)
     print('{} NodeResidualForceGoal'.format(len(goals_residual)))
 
-# shape profile curves from singularity to unsupported boundary
-profile_polyedges = []
-for pkey, polyedge in mesh.polyedges(data=True):
-        cdt1 = mesh.vertex_degree(polyedge[0]) == 6 and polyedge[-1] not in supports
-        cdt2 = mesh.vertex_degree(polyedge[-1]) == 6 and polyedge[0] not in supports
-        if cdt1 or cdt2:
-            polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
-            profile_polyedges.append(polyedge)
 
 goals_normal = []
 if add_node_tangent_goal:
     for polyedge in profile_polyedges:
         n = len(polyedge)
         for i, vkey in enumerate(polyedge):
-            angle = t_start + (t_end - t_start) * (i / (n -1)) ** t_exp
+            angle = t_start + (t_end - t_start) * (i / (n - 1)) ** t_exp
             goal = NodeTangentAngleGoal(vkey, vector=[0.0, 0.0, 1.0], target=angle, weight=weight_node_tangent_goal)
             goals_normal.append(goal)
     print('{} NodeTangentAngleGoal'.format(len(goals_normal)))
 
 goals_slope = []
+profile_lines = []
 if add_edge_slope_goal:
     for polyedge in profile_polyedges:
         n = len(polyedge)
         for i, edge in enumerate(pairwise(polyedge)):
-            angle = s_start + (s_end - s_start) * (i / (n -1)) ** s_exp
+            angle = s_start + (s_end - s_start) * (i / (n - 1)) ** s_exp
+            print(degrees(angle))
             vector0 = mesh.edge_vector(*edge)
             ortho = cross_vectors(vector0, [0.0, 0.0, 1.0])
             vector = rotate_points([vector0], pi / 2 - angle, axis=ortho, origin=[0.0, 0.0, 0.0])[0]
             goal = EdgeDirectionGoal(edge, target=vector, weight=weight_edge_slope_goal)
             goals_slope.append(goal)
+
+            # for viz
+            start = mesh.vertex_coordinates(edge[0])
+            end = add_vectors(start, scale_vector(normalize_vector(vector), target_edge_length))
+            line = Line(start, end)
+            profile_lines.append(line)
+
     print('{} EdgeDirectionGoal'.format(len(goals_slope)))
-            
+
+goals_length_profile = []
+if add_edge_length_profile_goal:
+    for polyedge in profile_polyedges:
+        n = len(polyedge)
+        for edge in pairwise(polyedge):
+            length = mesh.edge_length(*edge) * 0.75
+            goal = EdgeLengthGoal(edge, target=length, weight=weight_edge_length_profile_goal)
+            goals_length_profile.append(goal)
+
+    print('{} EdgeLengthProfileGoal'.format(len(goals_length_profile)))
+
 loss = Loss(
             SquaredError(goals=goals_target, name='NodePointGoal', alpha=1.0),
             SquaredError(goals=goals_length, name='EdgeLengthGoal', alpha=1.0),
@@ -259,16 +341,28 @@ loss = Loss(
             SquaredError(goals=goals_residual, name='NodeResidualForceGoal', alpha=1.0),
             SquaredError(goals=goals_normal, name='NodeTangentAngleGoal', alpha=1.0),
             SquaredError(goals=goals_slope, name='EdgeAngleGoal', alpha=1.0),
-            
+            SquaredError(goals=goals_length_profile, name='EdgeLengthProfileGoal', alpha=1.0),
+            SquaredError(goals=goals_spine_planarity, name='EdgeSpinePlanarityeGoal', alpha=1.0),
             )
 
-### FORM FINDING ###
+constraints = []
+if add_constraints:
+    # for node in network.nodes_free():
+    for polyedge in spine_polyedges:
+        for node in polyedge:
+            if node == snode:
+                continue
+            constraint = NodeZCoordinateConstraint(node, bound_low=0.0, bound_up=cross_height)
+            constraints.append(constraint)
 
+
+### FORM FINDING ###
 if optimize:
     network = constrained_fdm(network,
                               optimizer=opt(),
                               parameters=parameters,
                               loss=loss,
+                              constraints=constraints,
                               maxiter=maxiter,
                               tol=tol
                               )
@@ -344,12 +438,16 @@ if view:
     viewer = Viewer(width=1600, height=900, show_grid=False)
 
     viewer.add(mesh)
-    viewer.add(eqnetwork, as_wireframe=True)
+    for line in profile_lines:
+        viewer.add(line)
+    # viewer.add(eqnetwork, as_wireframe=True)
 
     if optimize:
         viewer.add(network,
                    edgewidth=(0.003, 0.02),
                    edgecolor="force",
+                   show_loads=False,
+                   show_reactions=False,
                    reactionscale=0.25,
                    loadscale=0.5)
 

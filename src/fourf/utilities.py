@@ -22,7 +22,6 @@ def mesh_to_fdnetwork(mesh, supported_vkeys, area_load, init_forcedensity):
 	for node in supported_vkeys:
 	    network.node_support(node)
 
-	mesh_area = mesh.area()
 	for node in network.nodes():
 	    vertex_area = mesh.vertex_area(node)
 	    network.node_load(node, load=[0.0, 0.0, vertex_area * area_load])
