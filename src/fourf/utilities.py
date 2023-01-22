@@ -16,8 +16,8 @@ def mesh_to_fdnetwork(mesh, supported_vkeys, area_load, init_forcedensity):
 	    network.add_node(x=x, y=y, z=z, key=vkey)
 
 	for u, v in mesh.edges():
-	    if u not in supported_vkeys or v not in supported_vkeys:
-	        network.add_edge(u, v)
+	    # if u not in supported_vkeys or v not in supported_vkeys:
+	    network.add_edge(u, v)
 
 	for node in supported_vkeys:
 	    network.node_support(node)

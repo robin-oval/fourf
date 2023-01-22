@@ -66,7 +66,7 @@ dead_load = -1.0  # dead load [kN/m2]
 pz = - (brick_density * brick_thickness * brick_layers) + dead_load  # vertical load (approximated self-weight + uniform dead load) [kN/m2]
 q0 = -1.0  # initial force densities [kN/m]
 
-opt = SLSQP  # LBFGSB  # optimization solver
+opt = LBFGSB  # optimization solver
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
 add_supports_as_parameters = True
 ctol = 0.25  # bound on supports X and Y positions
@@ -86,7 +86,7 @@ weight_edge_length_goal = 1.0
 
 # keep spine planar
 add_spine_planarity_goal = True
-weight_spine_planarity_goal = 1.0
+weight_spine_planarity_goal = 10.0
 
 # vertex projection goal to cover the desire space
 add_horizontal_projection_goal = False
@@ -113,7 +113,7 @@ add_edge_length_profile_goal = True
 weight_edge_length_profile_goal = 1.0
 
 # controls
-add_constraints = True
+add_constraints = False
 optimize = True
 view = True
 results = False
@@ -308,7 +308,7 @@ if add_edge_slope_goal:
         n = len(polyedge)
         for i, edge in enumerate(pairwise(polyedge)):
             angle = s_start + (s_end - s_start) * (i / (n - 1)) ** s_exp
-            print(degrees(angle))
+            # print(degrees(angle))
             vector0 = mesh.edge_vector(*edge)
             ortho = cross_vectors(vector0, [0.0, 0.0, 1.0])
             vector = rotate_points([vector0], pi / 2 - angle, axis=ortho, origin=[0.0, 0.0, 0.0])[0]
@@ -328,7 +328,8 @@ if add_edge_length_profile_goal:
     for polyedge in profile_polyedges:
         n = len(polyedge)
         for edge in pairwise(polyedge):
-            length = mesh.edge_length(*edge) * 0.75
+            # length = mesh.edge_length(*edge) * 0.75
+            length = brick_width * 2
             goal = EdgeLengthGoal(edge, target=length, weight=weight_edge_length_profile_goal)
             goals_length_profile.append(goal)
 
