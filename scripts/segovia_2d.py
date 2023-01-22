@@ -69,7 +69,7 @@ r = 2.5  # circumcircle radius [m]
 pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2  # triangle parameterisation angle [radians]
 wid_angles = pi / 6, pi / 6, pi / 6  # triangle to hexagon parameterisation angle [radians]
 offset1, offset2 = 0.9, 0.95  # offset factor the unsupported and supported edges inward respectively [-]
-target_edge_length = 0.20  # 0.25 [m]
+target_edge_length = 0.25  # 0.25 [m]
 support_raised_height = [0.0, 0.0, 0.0]  # raised height of each support [m]
 
 brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04 # [m]
@@ -110,13 +110,17 @@ weight_edge_length_profile_goal = 10.0
 add_edge_length_equal_spine_goal = False
 weight_edge_length_equal_spine_goal = 1.0
 
+# edge equalize length goal to obtain constant brick course widths
+add_edge_length_equal_strips_goal = False
+weight_edge_length_equal_strips_goal = 0.1
+
 # edge length goal to obtain constant brick course widths
 add_edge_length_strips_goal = True
 weight_edge_length_strips_goal = 0.1
 
-# edge equalize length goal to obtain constant brick course widths
-add_edge_length_equal_strips_goal = False
-weight_edge_length_equal_strips_goal = 1.
+# edge equalize length goals to polyedges parallel to spine
+add_edge_length_equal_polyedges_goal = True
+weight_edge_length_equal_polyedges_goal = 0.1
 
 # plane goal
 add_edge_plane_goal = True
@@ -231,15 +235,6 @@ for i in range(max_step):
     profile_strips[i] = strips
     profile_strips_split[i] = strips_split
 
-
-# edges on polyedges parallel to spine
-# pedges = {pkey: pedge for pkey, pedge in mesh.polyedges(True)}
-# courses_edges = []
-# for pkey, step in pkey2step.items():
-#     if step and step != -1:
-#         edges = list(pairwise(pedges[pkey]))
-#         courses_edges.extend(edges)
-
 ### FDM  ###
 
 eqnetwork = fdm(network)
@@ -323,48 +318,6 @@ if optimize:
             goals_length_equal_spine.append(goal)
         print('{} EdgeSpineEqualLengthGoal'.format(len(goals_length_equal_spine)))
 
-    goals_length_strips = []
-    if add_edge_length_strips_goal:
-        for i, strips_split in profile_strips_split.items():
-            for strip in strips_split:
-                for side in strip:
-                    indices = list(range(len(side)))
-                    # if i == 0:
-                    #     continue
-                        # indices = [1, -1]
-                    # for j in (1, 2, 3, 4, 5):
-                    for j in indices:
-                        edge = side[-j]
-                        goal = EdgeLengthGoal(edge, target=course_width, weight=weight_edge_length_strips_goal)
-                        goals_length_strips.append(goal)
-        print('{} EdgeStripsLengthGoal'.format(len(goals_length_strips)))
-
-    goals_length_equal_strips = []
-    if add_edge_length_equal_strips_goal:
-        for step, strips in profile_strips.items():
-            # if step != 3:
-            #     continue
-            for strip in strips:
-                edges = strip[1:-1]
-                goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_strips_goal)
-                goals_length_equal_strips.append(goal)
-        print('{} EdgeStripsEqualLengthGoal'.format(len(goals_length_equal_strips)))
-
-
-        # for strip in profile_strips[3]:
-        #     edges = strip
-        #     goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_strips_goal)
-        #     goals_length_equal_strips.append(goal)
-
-        # for strip in profile_strips[0]:
-        #     for u, v in (strip[2], strip[-2]):
-        #         edge = (u, v) if network.has_edge(u, v) else (v, u)
-        #         goal = EdgeLengthGoal(edge, target=course_width, weight=weight_edge_length_goal)
-        #         goals_length.append(goal)
-
-        print('{} EdgeStripsLengthGoal'.format(len(goals_length_equal_strips)))
-
-
     loss = Loss(
                 SquaredError(goals=goals_target, name='NodePointGoal', alpha=1.0),
                 SquaredError(goals=goals_spine_planarity, name='EdgeSpinePlanarityGoal', alpha=1.0),
@@ -388,7 +341,7 @@ if optimize:
 
     if add_node_target_goal:
         for polyedge in spine_polyedges:
-            for node in polyedge:
+            for node in polyedge[1:-1]:
                 if network.degree(node) == 6:
                     continue
                 x, y, z = network.node_coordinates(node)
@@ -418,6 +371,45 @@ if optimize:
 
         print('{} NodesStripsPlaneGoal'.format(len(goals_plane)))
 
+    goals_length_strips = []
+    if add_edge_length_strips_goal:
+        for i, strips_split in profile_strips_split.items():
+            for strip in strips_split:
+                for side in strip:
+                    indices = list(range(len(side)))
+                    for j in indices:
+                        edge = side[j]
+                        goal = EdgeLengthGoal(edge, target=course_width, weight=weight_edge_length_strips_goal)
+                        goals_length_strips.append(goal)
+        print('{} EdgeStripsLengthGoal'.format(len(goals_length_strips)))
+
+    goals_length_equal_strips = []
+    if add_edge_length_equal_strips_goal:
+        for step, strips in profile_strips.items():
+            if step == 0:
+                continue
+            for strip in strips:
+                edges = strip
+                goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_strips_goal)
+                goals_length_equal_strips.append(goal)
+        print('{} EdgeStripsEqualLengthGoal'.format(len(goals_length_equal_strips)))
+
+    # edge equalize length goals to polyedges parallel to spine
+    goals_length_equal_polyedges = []
+    if add_edge_length_equal_polyedges_goal:
+        for pkey, polyedge in mesh.polyedges(True):
+            ptype = pkey2type[pkey]
+            if ptype != "span":
+                continue
+            edges = []
+            for u, v in pairwise(polyedge):
+                if not mesh.has_edge((u, v)):
+                    u, v = v, u
+                edges.append((u, v))
+            goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_polyedges_goal)
+            goals_length_equal_polyedges.append(goal)
+        print('{} EdgePolyedgesEqualLengthGoal'.format(len(goals_length_equal_polyedges)))
+
     loss = Loss(
                 SquaredError(goals=goals_target, name='NodePointGoal', alpha=1.0),
                 SquaredError(goals=goals_spine_planarity, name='EdgeSpinePlanarityGoal', alpha=1.0),
@@ -425,6 +417,7 @@ if optimize:
                 SquaredError(goals=goals_length_profile, name='EdgeProfileLengthGoal', alpha=1.0),
                 SquaredError(goals=goals_length_strips, name='EdgeLengthStripsGoal', alpha=1.0),
                 PredictionError(goals=goals_length_equal_strips, name='EdgesLengthEqualStripsGoal', alpha=1.0),
+                PredictionError(goals=goals_length_equal_polyedges, name='EdgesLengthEqualPolyedgesGoal', alpha=1.0),
                 SquaredError(goals=goals_plane, name='NodePlaneGoal', alpha=1.0),
 
                 )
