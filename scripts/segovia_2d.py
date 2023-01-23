@@ -1,3 +1,5 @@
+import os
+
 from collections import defaultdict
 
 from math import pi, radians, degrees
@@ -12,6 +14,8 @@ from compas.geometry import add_vectors, scale_vector, normalize_vector
 
 from compas_quad.datastructures import CoarseQuadMesh
 from compas_quad.coloring import quad_mesh_polyedge_2_coloring
+
+from fourf import DATA
 
 from fourf.topology import threefold_vault
 from fourf.topology import quadmesh_densification
@@ -72,10 +76,12 @@ offset1, offset2 = 0.9, 0.95  # offset factor the unsupported and supported edge
 target_edge_length = 0.25  # 0.25 [m]
 support_raised_height = [0.0, 0.0, 0.0]  # raised height of each support [m]
 
-brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04 # [m]
+brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04  # [m]
 brick_layers = 0  # [-]
 brick_density = 12.0  # [kN/m3]
 comp_strength = 6.0  # [MPa]
+
+course_width = 0.125
 
 dead_load = 0.0  # dead load [kN/m2]
 pz = - (brick_density * brick_thickness * brick_layers) + dead_load  # vertical load (approximated self-weight + uniform dead load) [kN/m2]
@@ -126,7 +132,6 @@ weight_edge_length_equal_polyedges_goal = 0.1
 add_edge_plane_goal = True
 weight_edge_plane_goal = 0.1
 
-
 # controls
 optimize = True
 add_constraints = False
@@ -142,6 +147,10 @@ mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
 ### DENSE MESH ###
 
 mesh = quadmesh_densification(mesh, target_edge_length)
+
+#### PLANAR SMOOTH ###
+mesh.smooth_centroid(fixed=[vkey for vkey in mesh.vertices_on_boundary() if mesh.vertex_degree(vkey) == 2], kmax=5)
+mesh.smooth_centroid(fixed=mesh.vertices_on_boundary(), kmax=100)
 
 ### ELEMENT TYPES ###
 
@@ -165,21 +174,6 @@ pkey2step = quadmesh_polyedge_assembly_sequence(mesh, pkey2type)
 steps = set([step for step in pkey2step.values() if step is not None])
 min_step, max_step = int(min(steps)), int(max(steps))
 
-vkey2step = {vkey: step for pkey, step in pkey2step.items() for vkey in mesh.polyedge_vertices(pkey) if step is not None and step >= 0}
-
-# group objects per step
-step2edges = {step: [] for step in range(min_step, max_step + 1)}
-for u, v in edges_ortho:
-    if u not in supports:
-        if vkey2step[u] > vkey2step[v]:
-            u, v = v, u
-        step = max([vkey2step[u], vkey2step[v]])
-        step2edges[step].append((u, v))
-
-#### PLANAR SMOOTH ###
-mesh.smooth_centroid(fixed=[vkey for vkey in mesh.vertices_on_boundary() if mesh.vertex_degree(vkey) == 2], kmax=5)
-mesh.smooth_centroid(fixed=mesh.vertices_on_boundary(), kmax=100)
-
 ### DATA CONVERSION ###
 network = mesh_to_fdnetwork(mesh, supports, pz, q0)
 
@@ -194,14 +188,6 @@ for pkey, polyedge in mesh.polyedges(data=True):
     if cdt1 or cdt2:
         polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
         spine_polyedges.append(polyedge)
-
-# profile nodes
-pnodes = []
-for pkey, polyedge in mesh.polyedges(True):
-    if snode in polyedge:
-        for node in polyedge:
-            if mesh.is_vertex_on_boundary(node) and not network.is_node_support(node):
-                pnodes.append(node)
 
 # profile curves (from singularity to unsupported boundary)
 profile_polyedges = []
@@ -257,6 +243,7 @@ if optimize:
                 parameters_supports.append(parameter)
 
     ### GOALS ###
+    print()
 
     # target position of spine central node
     goals_target = []
@@ -295,7 +282,6 @@ if optimize:
         print('{} ProfilePlanarityGoal'.format(len(goals_spine_planarity)))
 
     # length of profile curves edges
-    course_width = 0.125
     goals_length_profile = []
     if add_edge_length_profile_goal:
         for polyedge in profile_polyedges:
@@ -334,7 +320,6 @@ if optimize:
                               tol=tol
                               )
 
-    # raise
     cnetwork1 = network.copy()
 
     ### CONSTRAINED FORM FINDING II ###
@@ -427,8 +412,23 @@ if optimize:
                               parameters=parameters + parameters_supports,
                               loss=loss,
                               maxiter=maxiter,
-                              tol=tol
+                              tol=tol * 2
                               )
+
+    cnetwork2 = network.copy()
+
+    ### EXPORT ###
+
+    # update mesh coordinates
+    for vkey in mesh.vertices():
+        xyz = network.node_coordinates(vkey)
+        mesh.vertex_attributes(vkey, names="xyz", values=xyz)
+
+    if export:
+        for name, datastruct in {"network": network, "mesh": mesh}.items():
+            filepath = os.path.join(DATA, f"tripod_{name}_2d.json")
+            datastruct.to_json(filepath)
+        print("Exported JSON files!")
 
 ### VIEWER ###
 
@@ -436,10 +436,11 @@ if view:
     viewer = Viewer(width=1600, height=900, show_grid=False)
 
     # viewer.add(mesh)
-    #
+
+    # viewer.add(eqnetwork, as_wireframe=True)
+
     # viewer.add(cnetwork1, as_wireframe=True, show_points=False)
-    #
-    #
+
     # for polyedge in spine_polyedges:
     #     for i, edge in enumerate(pairwise(polyedge)):
     #         line = Line(*mesh.edge_coordinates(*edge))
@@ -463,84 +464,5 @@ if view:
                 polyline = Polyline([network.node_coordinates(n) for n in polyedge])
                 viewer.add(polyline)
 
-    # viewer.add(eqnetwork, as_wireframe=True)
-
-    # if optimize:
-    #     viewer.add(network,
-    #                edgewidth=(0.003, 0.02),
-    #                edgecolor="force",
-    #                show_loads=False,
-    #                show_reactions=False,
-    #                reactionscale=0.25,
-    #                loadscale=0.5)
 
     viewer.show()
-
-
-### RESULTS ###
-
-if results:
-    # new meshes to compute areas
-    mesh_ff_xyz = mesh.copy()  # mesh that follows the form found network
-    mesh_ff_xy = mesh.copy()  # mesh that follows the projection of the form found network
-    for vkey in mesh.vertices():
-        for coord, new_coord in zip('xyz', network.node_coordinates(vkey)):
-            mesh_ff_xyz.vertex[vkey][coord] = new_coord
-            if not coord == 'z':
-                mesh_ff_xy.vertex[vkey][coord] = new_coord
-
-    # edge force densities
-    sorted_fds = sorted([network.edge_forcedensity(edge) for edge in network.edges()])
-    print('Minimum force density of {} kN/m and maximum force density of {} kN/m'.format(round(sorted_fds[0], 2), round(sorted_fds[-1], 2)))
-    # edge lengths
-    sorted_lengths = sorted([network.edge_length(*edge) for edge in network.edges()])
-    print('Minimum length of {} m and maximum length of {} m'.format(round(sorted_lengths[0], 2), round(sorted_lengths[-1], 2)))
-
-    # vault surface to build
-    mesh_area = mesh_ff_xyz.area()
-    brick_area = brick_length * brick_width # top/bottom surface - include mortar thickness as percentage?
-    print('Surface area of {} m2, requiring about {} bricks'.format(round(mesh_area, 1), int(mesh_area / brick_area)))
-    max_z = max([network.node[node]['z'] for node in network.nodes()])
-    print('Maximum height to reach of {} m'.format(round(max_z, 2)))
-
-    # space use - height, area and volume
-    box = bounding_box([network.node_coordinates(node) for node in network.nodes()])
-    dx, dy, dz = box[1][0] - box[0][0], box[3][1] - box[0][1], box[4][2] - box[0][2]
-    print('Bounding box of {} m x {} m x {} m'.format(round(dx, 1), round(dy, 1), round(dz, 1)))
-    apex = max([network.node[node]['z'] for node in network.nodes() if network.degree(node) == 6])
-    print('Height of spine cross of {} m'.format(round(apex, 2)))
-    mesh_area_xy = mesh_ff_xyz.area()
-    print('Vault covered area {} m2'.format(round(mesh_area_xy, 1)))
-    comfort_height = 2.0
-    comfort_surface = sum([mesh_ff_xy.vertex_area(vkey) for vkey in mesh.vertices() if mesh_ff_xyz.vertex_coordinates(vkey)[2] > comfort_height])
-    print('Vault covered area of {} m2 above {} m'.format(round(comfort_surface, 1), comfort_height))
-
-    # structural design
-    #forces on foundations
-    reactions = []
-    for pkey, ptype in pkey2type.items():
-        if ptype == 'support':
-            reactions.append(sum_vectors([network.node_reaction(node) for node in mesh.polyedge_vertices(pkey)]))
-    reactions = [(length_vector_xy(xyz), xyz[2]) for xyz in reactions]
-    print('Horizontal and vertical action forces on supports {} kN'.format(reactions))
-    # forces
-    sorted_forces = sorted([network.edge_force(edge) for edge in network.edges()])
-    print('Minimum force of {} kN and maximum force of {} kN'.format(round(sorted_forces[0], 2), round(sorted_forces[-1], 2)))
-    # stresses
-    edge2stress = {}
-    for u, v in network.edges():
-        force = network.edge_force(edge)
-        a = mesh.edge_midpoint(mesh.face_vertex_after(mesh.halfedge[u][v], v, 1), mesh.face_vertex_after(mesh.halfedge[u][v], v, 2)) if mesh.halfedge[u][v] is not None else mesh.edge_midpoint(u, v)
-        b = mesh.edge_midpoint(mesh.face_vertex_after(mesh.halfedge[v][u], u, 1), mesh.face_vertex_after(mesh.halfedge[v][u], u, 2)) if mesh.halfedge[v][u] is not None else mesh.edge_midpoint(v, u)
-        width = distance_point_point(a, b) / 2
-        edge2stress[(u, v)] = force / (width * brick_thickness * brick_layers)
-    sorted_sresses = sorted([stress for stress in edge2stress.values()])
-    print('Minimum stress of {} MPa and maximum stress of {} MPa'.format(round(sorted_sresses[0] / 1000, 2), round(sorted_sresses[-1] / 1000, 2)))
-    print('Minimum stress utilization of {} and maximum stress utilization of {} '.format(round(sorted_sresses[0] / 1000 / comp_strength, 2), round(sorted_sresses[-1] / 1000 / comp_strength, 2)))
-
-    # vaulting
-    brick_course_widths = [network.edge_length(*edge) for edge in edges_ortho]
-    print('Brick course width of mean {} m and standard deviation {} m'.format(round(mean(brick_course_widths), 2), round(std(brick_course_widths), 2)))
-
-if export:
-    pass

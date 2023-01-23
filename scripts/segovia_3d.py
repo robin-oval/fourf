@@ -29,7 +29,7 @@ from fourf.view import view_f4
 from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
-from jax_fdm.optimization import LBFGSB, SLSQP
+from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder
 
 from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
 
@@ -49,7 +49,7 @@ from jax_fdm.constraints import EdgeLengthConstraint, EdgeForceConstraint, NodeZ
 
 from jax_fdm.losses import SquaredError, Loss, PredictionError
 
-from jax_fdm.visualization import Viewer
+from jax_fdm.visualization import Viewer, LossPlotter
 
 
 # ==========================================================================
@@ -97,7 +97,7 @@ pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area
 
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
 add_supports_as_parameters = True
-ctol = 0.75  # 0.5  bound on supports X and Y positions
+ctol = 0.5  # 0.5  bound on supports X and Y positions
 
 opt = LBFGSB  # optimization solver
 maxiter = 10000  # maximum number of iterations
@@ -113,49 +113,51 @@ add_spine_xy_goal = True
 weight_spine_xy_goal = 10.0
 
 # keep spine planar
-add_spine_planarity_goal = True
+add_spine_planarity_goal = True  # True
 weight_spine_planarity_goal = 10.0
 
 # vertex projection goal to cover the desire space
-add_horizontal_projection_goal = True
+add_horizontal_projection_goal = True  # True
 weight_projection_goal = 10.0
 
 # edge length goal to obtain constant brick course widths
-add_edge_length_profile_goal = True
+add_edge_length_profile_goal = True  # True
 weight_edge_length_profile_goal = 1.0
 
 # profile edges direction goal
 add_edge_direction_profile_goal = True
-s_start, s_end, s_exp = radians(70), radians(30), 1.0  # minimum and maximum angles and variation exponent [-]
+s_start, s_end, s_exp = radians(70), radians(30), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
 weight_edge_direction_profile_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
-add_edge_length_strips_goal = False
+add_edge_length_strips_goal = False  # False
 weight_edge_length_strips_goal = 1.0
 
 # edge equalize length goal to obtain constant brick course widths
 add_edge_length_equal_strips_goal = True
-weight_edge_length_equal_strips_goal = 1.0
+weight_edge_length_equal_strips_goal = 1.0  # 1.0
 
 # edge equalize length goals to polyedges parallel to spine
 add_edge_length_equal_polyedges_goal = False
 weight_edge_length_equal_polyedges_goal = 1.0
 
 # shape the normal of the polyedges running from the singularity to the unsupported boundary
+# NOTE: currently not working properly! do not use!
 add_node_tangent_goal = False
-t_start, t_end, t_exp = radians(20), radians(40), 1.0  # minimum and maximum reaction forces [kN] and variation exponent [-]
-weight_node_tangent_goal = 1.0
+t_start, t_end, t_exp = radians(70), radians(30), 1.0  # minimum and maximum angles from Z and variation exponent [-]
+weight_node_tangent_goal = 10.0
 
 # plane goal
 add_edge_plane_goal = False
-weight_edge_plane_goal = 100.0
+weight_edge_plane_goal = 10.0
 
 # controls
 optimize = True
+record = False
 add_constraints = False
 view = True
-view_node_tangents = True
-results = False
+view_node_tangents = False
+results = True
 export = False
 
 # ==========================================================================
@@ -234,6 +236,11 @@ for pkey, polyedge in mesh.polyedges(data=True):
     if cdt1 or cdt2:
         polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
         profile_polyedges.append(polyedge)
+
+# profile nodes
+profile_nodes = set()
+for polyedge in profile_polyedges:
+    profile_nodes.update(polyedge)
 
 # full profile strips by assembly step - parallel to profile curve
 # NOTE: assumes all profile polyedges have all the same length
@@ -419,16 +426,23 @@ if optimize:
 
     # control the normal at the nodes of the edges parallel to the spine
     goals_normal = []
+    nodes_normal = set()
     if add_node_tangent_goal:
         n = max_step - 1
-        for step_i in range(1, max_step):  # NOTE: skip spine
+        for i in range(1, max_step):  # NOTE: skip spine
+            if i != 2:
+                continue
+
+            angle = t_start + (t_end - t_start) * ((i - 1) / (n - 1)) ** t_exp
+            print(i, degrees(angle))
             for pkey, polyedge in mesh.polyedges(True):
                 step = pkey2step[pkey]
-                if step != step_i:
+                if step != i:
                     continue
-                angle = t_start + (t_end - t_start) * (i / (n - 1)) ** t_exp
-                print(step, angle)
                 for node in polyedge:
+                    if node in supports or node in profile_nodes:
+                        continue
+                    nodes_normal.add(node)
                     goal = NodeTangentAngleGoal(node, vector=[0.0, 0.0, 1.0], target=angle, weight=weight_node_tangent_goal)
                     goals_normal.append(goal)
 
@@ -492,16 +506,31 @@ if optimize:
 # Solve constrained form-finding problem
 # ==========================================================================
 
+    optimizer = opt()
+    recorder = None
+    if record:
+        recorder = OptimizationRecorder(optimizer)
+
     network = constrained_fdm(network,
-                              optimizer=opt(),
+                              optimizer=optimizer,
                               parameters=parameters + parameters_supports,
                               constraints=constraints,
                               loss=loss,
                               maxiter=maxiter,
-                              tol=tol
+                              tol=tol,
+                              callback=recorder
                               )
 
     cnetwork1 = network.copy()
+
+    if record:
+        plotter = LossPlotter(loss, network, dpi=150, figsize=(8, 4))
+        plotter.plot(recorder.history)
+        plotter.show()
+
+# ==========================================================================
+# Export
+# ==========================================================================
 
 if export:
     filepath = os.path.join(DATA, "tripod_network_3d.json")
@@ -576,6 +605,7 @@ if view:
         vkeys = []
 
         for vkey in mesh.vertices():
+        # for vkey in nodes_normal:
             vkeys.append(vkey)
 
             xyz = mesh.vertex_coordinates(vkey)
