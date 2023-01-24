@@ -90,7 +90,7 @@ brick_layers = 4  # [-]
 brick_density = 12.0  # [kN/m3]
 comp_strength = 6.0  # [MPa]
 
-course_width = brick_width
+course_width = 0.125 * 1.5
 
 dead_load = 0.0  # dead load [kN/m2]
 pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
@@ -126,7 +126,7 @@ weight_edge_length_profile_goal = 1.0
 
 # profile edges direction goal
 add_edge_direction_profile_goal = True
-s_start, s_end, s_exp = radians(70), radians(30), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
+s_start, s_end, s_exp = radians(80), radians(30), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
 weight_edge_direction_profile_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
@@ -135,7 +135,7 @@ weight_edge_length_strips_goal = 1.0
 
 # edge equalize length goal to obtain constant brick course widths
 add_edge_length_equal_strips_goal = True
-weight_edge_length_equal_strips_goal = 1.0  # 1.0
+weight_edge_length_equal_strips_goal = 10.0  # 1.0
 
 # edge equalize length goals to polyedges parallel to spine
 add_edge_length_equal_polyedges_goal = False
@@ -157,8 +157,8 @@ record = False
 add_constraints = False
 view = True
 view_node_tangents = False
-results = True
-export = False
+results = False
+export = True
 
 # ==========================================================================
 # Load FD network
