@@ -29,7 +29,7 @@ from fourf.view import view_f4
 from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
-from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder
+from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder, IPOPT, TrustRegionConstrained
 
 from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
 
@@ -92,15 +92,15 @@ comp_strength = 6.0  # [MPa]
 
 course_width = 0.125 * 1.5
 
-dead_load = 0.0  # dead load [kN/m2]
+dead_load = 0.0  # additional dead load [kN/m2]
 pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
 
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
 add_supports_as_parameters = True
-ctol = 0.5  # 0.5  bound on supports X and Y positions
+ctol = 0.75  # 0.5  bound on supports X and Y positions
 
 opt = LBFGSB  # optimization solver
-maxiter = 10000  # maximum number of iterations
+maxiter = 3000  # maximum number of iterations
 tol = 1e-6  # optimization tolerance
 
 # aim for target positions
@@ -126,7 +126,7 @@ weight_edge_length_profile_goal = 1.0
 
 # profile edges direction goal
 add_edge_direction_profile_goal = True
-s_start, s_end, s_exp = radians(80), radians(30), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
+s_start, s_end, s_exp = radians(30), radians(70), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
 weight_edge_direction_profile_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
@@ -154,11 +154,11 @@ weight_edge_plane_goal = 10.0
 # controls
 optimize = True
 record = False
-add_constraints = False
+add_constraints = True
 view = True
 view_node_tangents = False
 results = False
-export = True
+export = False
 
 # ==========================================================================
 # Load FD network
@@ -499,7 +499,7 @@ if optimize:
             for node in polyedge:
                 if node == snode:
                     continue
-                constraint = NodeZCoordinateConstraint(node, bound_low=0.0, bound_up=cross_height)
+                constraint = NodeZCoordinateConstraint(node, bound_up=cross_height)
                 constraints.append(constraint)
 
 # ==========================================================================
