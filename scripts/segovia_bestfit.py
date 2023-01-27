@@ -3,6 +3,8 @@ import os
 import numpy as np
 from scipy.spatial.distance import directed_hausdorff
 
+from itertools import combinations
+
 # compas
 from compas.colors import Color
 from compas.geometry import Line
@@ -26,7 +28,7 @@ from jax_fdm.optimization import OptimizationRecorder
 
 from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
 
-from jax_fdm.goals import EdgeLengthGoal, NodePlaneGoal, EdgeDirectionGoal
+from jax_fdm.goals import EdgeLengthGoal, NodePlaneGoal, EdgeDirectionGoal, EdgesLengthEqualGoal
 from jax_fdm.goals import NodePointGoal, NodeYCoordinateGoal, NodeZCoordinateGoal, NodeXCoordinateGoal, NetworkLoadPathGoal
 
 from jax_fdm.losses import RootMeanSquaredError, SquaredError, MeanAbsoluteError, AbsoluteError, PredictionError
@@ -74,18 +76,26 @@ tol = 1e-9  # optimizer tolerance
 # point constraint weights
 w_start = 10.0  # 10
 w_end = 1.0  # 1
-w_factor_boundary = 1.  # 0.25
+w_factor_boundary = 0.25  # 0.25
 
 # on plane weight
-weight_plane = 10.0  # 10.0
+weight_plane = 5.0  # 10.0
 
 # edge direction
-weight_direction_at_singularity = 10.0
-weight_direction_at_support = 1.0
+weight_direction_at_singularity = 5.0
+weight_direction_at_support = 2.0
 weight_spine_planarity = 10.0
 
+weight_equal_length_support_polyedges = 0.0
+weight_length_support_polyedges = 10.0
+
+weight_edge_length_equal_strips_goal = 0.0
+weight_span_length_goal = 0.0
+
 add_support_parameters = True
+add_spine_support_parameters = False
 ctol = 0.5
+ctol_spine = 0.1
 
 record = False  # True to record optimization history of force densities
 export = True  # export result to JSON
@@ -135,6 +145,13 @@ min_step, max_step = int(min(steps)), int(max(steps))
 
 # singularity node
 snode = [node for node in network.nodes() if network.degree(node) == 6].pop()
+
+# support polyedges
+support_polyedges = []
+for pkey, polyedge in mesh.polyedges(data=True):
+    if pkey2step[pkey] != -1:
+        continue
+    support_polyedges.append(polyedge)
 
 # spine polyedges (from singularity to supported boundary)
 spine_polyedges = []
@@ -223,8 +240,9 @@ for edge in network.edges():
 if add_support_parameters:
     for node in supports:
         # NOTE: skip spine node supports
-        # if node in spine_nodes:
-            # continue
+        if not add_spine_support_parameters:
+            if node in spine_nodes:
+                continue
         x, y, z = network.node_coordinates(node)
         parameters.append(NodeAnchorXParameter(node, x - ctol, x + ctol))
         parameters.append(NodeAnchorYParameter(node, y - ctol, y + ctol))
@@ -313,6 +331,43 @@ for polyedge in span_polyedges_split + spine_polyedges:
         point = network.node_coordinates(node)
         goals.append(NodePointGoal(node, target=point, weight=weight))
 
+# TODO: add trail edges plane constraint
+for polyedge in support_polyedges:
+    edges = []
+    for u, v in pairwise(polyedge):
+        if not network.has_edge(u, v):
+            u, v = v, u
+        edges.append((u, v))
+        length = network.edge_length(u, v)
+        goal = EdgeLengthGoal((u, v), length, weight_length_support_polyedges)
+        goals.append(goal)
+    goal = EdgesLengthEqualGoal(edges, weight_equal_length_support_polyedges)
+    goals.append(goal)
+
+for step, strips in profile_strips.items():
+    for strip in strips:
+        edges = strip
+        edges = []
+        for u, v in pairwise(polyedge):
+            if not network.has_edge(u, v):
+                u, v = v, u
+            edges.append((u, v))
+        goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_strips_goal)
+        goals.append(goal)
+
+tie_edges = []
+spine_supports = [node for node in spine_nodes if node in supports]
+sorted_edges = sorted(combinations(spine_supports, 2), key=lambda x: mesh.edge_length(*x))
+# print([mesh.edge_length(u, v) for u,v in sorted_edges])
+for i, edge in enumerate(sorted_edges):
+    network.add_edge(*edge)
+    tie_edges.append(edge)
+    length_span = network.edge_length(*edge)
+    print(length_span)
+    goal = EdgeLengthGoal(edge, length_span, weight=weight_span_length_goal)
+    goals.append(goal)
+    parameters.append(EdgeForceDensityParameter(edge))
+
 # for node in network.nodes():
 #     if node in supports or node in spine_nodes:
 #         continue
@@ -357,6 +412,10 @@ network = constrained_fdm(network,
                           maxiter=maxiter,
                           tol=tol,
                           callback=recorder)
+
+print("\nDeleting tie edges for export...")
+for u, v in tie_edges:
+    network.delete_edge(u, v)
 
 # ==========================================================================
 # Export optimization history
