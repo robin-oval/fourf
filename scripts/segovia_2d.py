@@ -70,11 +70,11 @@ from compas.utilities import pairwise
 
 ### INPUTS ###
 
-r = 2.0  # circumcircle radius [m]
+r = 2.7  # circumcircle radius [m]
 pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2  # triangle parameterisation angle [radians]
 wid_angles = pi / 6, pi / 6, pi / 6  # triangle to hexagon parameterisation angle [radians]
 offset1, offset2 = 0.9, 0.95  # offset factor the unsupported and supported edges inward respectively [-]
-target_edge_length = 0.25  # 0.25 [m]
+target_edge_length = 0.35  # 0.25 [m]
 support_raised_height = [0.0, 0.0, 0.0]  # raised height of each support [m]
 
 brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04  # [m]
@@ -92,7 +92,7 @@ opt = LBFGSB  # optimization solver
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
 add_supports_as_parameters = True
 ctol = 1.0  # 0.5, bound on supports X and Y positions
-maxiter = 1000  # maximum number of iterations
+maxiter = 5000  # maximum number of iterations
 tol = 1e-6  # optimization tolerance
 
 # aim for target positions
@@ -136,7 +136,7 @@ weight_edge_plane_goal = 0.1
 # spans length goal
 add_span_length_goal = True  # False
 weight_span_length_goal = 1.0
-length_span_short = 3.0  # short span
+length_span_short = 4.0  # short span
 length_span_long = 5.0  # long span
 
 # controls
@@ -344,7 +344,7 @@ if optimize:
                 continue
             edges = []
             for u, v in pairwise(polyedge):
-                if not mesh.has_edge((u, v)):
+                if not network.has_edge(u, v):
                     u, v = v, u
                 edges.append((u, v))
             goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_polyedges_goal)

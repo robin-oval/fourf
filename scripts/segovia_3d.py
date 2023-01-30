@@ -1,5 +1,6 @@
 import os
 
+from itertools import combinations
 from math import pi, radians, degrees
 
 from numpy import mean, std
@@ -79,11 +80,11 @@ and add goals to guide them on radial lines
 # Inputs
 # ==========================================================================
 
-r = 2.5  # circumcircle radius [m]
+r = 2.7  # circumcircle radius [m]
 pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2  # triangle parameterisation angle [radians]
 wid_angles = pi / 6, pi / 6, pi / 6  # triangle to hexagon parameterisation angle [radians]
 offset1, offset2 = 0.9, 0.95  # offset factor the unsupported and supported edges inward respectively [-]
-target_edge_length = 0.25  # 0.25 [m]
+target_edge_length = 0.35  # 0.25 [m]
 
 brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04  # [m]
 brick_layers = 4  # [-]
@@ -92,11 +93,11 @@ comp_strength = 6.0  # [MPa]
 
 course_width = 0.125 * 1.5
 
-dead_load = 0.0  # additional dead load [kN/m2]
+dead_load = 1.0  # additional dead load [kN/m2]
 pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
 
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
-add_supports_as_parameters = True
+add_supports_as_parameters = False  # True
 ctol = 0.75  # 0.5  bound on supports X and Y positions
 
 opt = LBFGSB  # optimization solver
@@ -174,6 +175,9 @@ network0 = network.copy()
 vertices, faces = threefold_vault(r, pos_angles, wid_angles, offset1=offset1, offset2=offset2)
 mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
 mesh = quadmesh_densification(mesh, target_edge_length)
+# from compas.datastructures import Mesh
+# mesh = Mesh.from_json(os.path.join(DATA, "tripod_mesh_2d.json"))
+# mesh = QuadMesh.from_vertices_and_faces(*mesh.to_vertices_and_faces())
 
 # ==========================================================================
 # Update node loads
