@@ -20,28 +20,73 @@ wid_angles = radians(7.5), radians(7.5), radians(7.5) # triangle to hexagon para
 
 offset1, offset2 = 0.85, 0.95 # offset factor the unsupported and supported edges inward respectively [-]
 
-target_edge_length = 0.10 # [m]
+target_edge_length = 0.05  # [m]
 
 view = True
 
 ### COARSE MESH ###
 
-vertices, faces = threefold_vault(r, pos_angles, wid_angles, offset1=offset1, offset2=offset2)
-mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
+# vertices, faces = threefold_vault(r, pos_angles, wid_angles, offset1=offset1, offset2=offset2)
+# mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
+
+filepath = "/Users/arpj/code/princeton/fourf/data/tripod_dual_2d_mesh.json"
+mesh = CoarseQuadMesh.from_json(filepath)
+print("num bnds", len(mesh.vertices_on_boundaries()))
 
 ### DENSE MESH ###
 
+deletable = []
+for fkey in mesh.faces():
+    if len(mesh.face_vertices(fkey)) != 4:
+        deletable.append(fkey)
+
+# restorable = []
+assert len(deletable) == 1
+
+for dkey in deletable:
+    hexagon = mesh.face_vertices(dkey)
+    mesh.delete_face(dkey)
+
+print("num bnds", len(mesh.vertices_on_boundaries()))
+
 mesh.collect_strips()
-mesh.set_strips_density_target(target_edge_length)
+
+for skey, strip in mesh.strips(True):
+    if strip[0][0] in hexagon or strip[-1][0] in hexagon:
+        mesh.strip_density(skey, 1)
+        # mesh.set_strip_density_target(skey, 1.)
+    else:
+        mesh.strip_density(skey, 5)
+        # mesh.set_strip_density_target(skey, target_edge_length)
+
+# mesh.strips_density(1)
 mesh.densification()
+
+print("num bnds", len(mesh.vertices_on_boundaries()))
+
 mesh = mesh.dense_mesh()
-mesh = mesh.dual()
+
+print("num bnds", len(mesh.vertices_on_boundaries()))
+
+assert len(mesh.vertices_on_boundaries()) == 2, f"{len(mesh.vertices_on_boundaries())} boundaries!"
+
+for vertices in mesh.vertices_on_boundaries():
+    if len(vertices) == 7:
+        mesh.add_face(vertices[:-1])
+
+from compas.datastructures import mesh_weld
+mesh = mesh_weld(mesh)
 mesh.collect_polyedges()
-print(mesh)
 
-### SUPPORTS ###
 
-supported_pkeys = set()
+# print("num bnds", len(mesh.vertices_on_boundaries()))
+
+# for boundary in mesh.vertices_on_boundaries():
+#     print(boundary)
+# raise
+# ### SUPPORTS ###
+
+# supported_pkeys = set()
 bdrypkey2length = {}
 for pkey, polyedge in mesh.polyedges(data=True):
     if mesh.is_edge_on_boundary(polyedge[0], polyedge[1]):
@@ -51,6 +96,10 @@ supported_pkeys = set([pkey for pkey, length in bdrypkey2length.items() if lengt
 print('supported_pkeys', supported_pkeys)
 
 supported_vkeys = set([vkey for pkey in supported_pkeys for vkey in mesh.polyedge_vertices(pkey)])
+
+for fkey in mesh.faces():
+    if len(mesh.face_vertices(fkey)) == 6:
+        print("Here!", fkey)
 
 ### SPINE ###
 
@@ -123,6 +172,14 @@ if view:
 
     # viewer.add(mesh)
 
+    # from compas.geometry import Polyline
+
+    # for boundary in mesh.vertices_on_boundaries():
+    #     polyline = Polyline([mesh.vertex_coordinates(vkey) for vkey in boundary])
+    #     viewer.add(polyline, linewidth=5.0)
+        # print(boundary)
+
+
     # for pkey, ptype in pkey2type.items():
     #     if ptype == 'support':
     #         linecolor = (1.0, 0.0, 0.0)
@@ -135,8 +192,12 @@ if view:
     #     for edge in pairwise(mesh.polyedge_vertices(pkey)):
     #         viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor)
 
+    spine_strip_edges_flat = [edge for edges in spine_strip_edges for edge in edges]
+
     for pkey in supported_pkeys:
         for edge in pairwise(mesh.polyedge_vertices(pkey)):
+            if edge in spine_strip_edges_flat:
+                continue
             viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.0, 0.0))
     for strip in spine_strip_edges:
         for edge in strip:
