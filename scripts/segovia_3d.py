@@ -30,6 +30,7 @@ from fourf.view import view_f4
 from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
+from jax_fdm.equilibrium import EquilibriumModel
 from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder, IPOPT, TrustRegionConstrained
 
 from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
@@ -96,47 +97,47 @@ course_width = 0.125 * 1.5
 dead_load = 1.0  # additional dead load [kN/m2]
 pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
 
-qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
-add_supports_as_parameters = False  # True
-ctol = 0.75  # 0.5  bound on supports X and Y positions
+qmin, qmax = None, None  # bound on force densities [kN/m]
+add_supports_as_parameters = True
+ctol = 0.5  # 0.5  bound on supports X and Y positions
 
 opt = LBFGSB  # optimization solver
-maxiter = 3000  # maximum number of iterations
+maxiter = 10000  # maximum number of iterations
 tol = 1e-6  # optimization tolerance
 
 # aim for target positions
 add_singularity_xyz_goal = True
 cross_height = 2.2  # height of spine cross [m]
-weight_node_target_goal = 10.0
+weight_node_target_goal = 1.0
 
 # keep spine nodes xy position
 add_spine_xy_goal = True
-weight_spine_xy_goal = 10.0
+weight_spine_xy_goal = 1.0
 
 # keep spine planar
-add_spine_planarity_goal = True  # True
-weight_spine_planarity_goal = 10.0
+add_spine_planarity_goal = True
+weight_spine_planarity_goal = 1.0
 
 # vertex projection goal to cover the desire space
-add_horizontal_projection_goal = True  # True
-weight_projection_goal = 10.0
+add_horizontal_projection_goal = True
+weight_projection_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
-add_edge_length_profile_goal = True  # True
+add_edge_length_profile_goal = False
 weight_edge_length_profile_goal = 1.0
 
 # profile edges direction goal
-add_edge_direction_profile_goal = True
-s_start, s_end, s_exp = radians(30), radians(70), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
-weight_edge_direction_profile_goal = 1.0
+add_edge_direction_profile_goal = False
+s_start, s_end, s_exp = radians(60), radians(60), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
+weight_edge_direction_profile_goal = 10.0
 
 # edge length goal to obtain constant brick course widths
-add_edge_length_strips_goal = False  # False
+add_edge_length_strips_goal = True # False
 weight_edge_length_strips_goal = 1.0
 
 # edge equalize length goal to obtain constant brick course widths
-add_edge_length_equal_strips_goal = True
-weight_edge_length_equal_strips_goal = 10.0  # 1.0
+add_edge_length_equal_strips_goal = False
+weight_edge_length_equal_strips_goal = 1.0  # 1.0
 
 # edge equalize length goals to polyedges parallel to spine
 add_edge_length_equal_polyedges_goal = False
@@ -144,9 +145,9 @@ weight_edge_length_equal_polyedges_goal = 1.0
 
 # shape the normal of the polyedges running from the singularity to the unsupported boundary
 # NOTE: currently not working properly! do not use!
-add_node_tangent_goal = False
-t_start, t_end, t_exp = radians(70), radians(30), 1.0  # minimum and maximum angles from Z and variation exponent [-]
-weight_node_tangent_goal = 10.0
+add_node_tangent_goal = True
+t_start, t_end, t_exp = radians(45), radians(45), 1.0  # minimum and maximum angles from Z and variation exponent [-]
+weight_node_tangent_goal = 1.0
 
 # plane goal
 add_edge_plane_goal = False
@@ -155,9 +156,9 @@ weight_edge_plane_goal = 10.0
 # controls
 optimize = True
 record = False
-add_constraints = True
+add_constraints = False
 view = True
-view_node_tangents = False
+view_node_tangents = True
 results = False
 export = False
 
@@ -190,6 +191,8 @@ for vkey in mesh.vertices():
 for node in network.nodes():
     vertex_area = mesh.vertex_area(node)
     network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
+
+# network.edges_forcedensities(-2.0)
 
 # ==========================================================================
 # Network parts
@@ -273,7 +276,62 @@ for i in range(max_step):
 # Network parts
 # ==========================================================================
 
-eqnetwork = fdm(network)
+network = fdm(network)
+
+for vkey in mesh.vertices():
+    xyz = network.node_coordinates(vkey)
+    mesh.vertex_attributes(vkey, names="xyz", values=xyz)
+
+mesh.flip_cycles()
+
+# ==========================================================================
+# Optimization parameters
+# ==========================================================================
+# import jax.numpy as jnp
+# from jax_fdm.goals import NodeNormalAngleGoal
+
+# model = EquilibriumModel(network)
+# q, xyz_fixed, loads = [jnp.array(parameters, dtype=jnp.float64) for parameters in network.parameters()]
+# eqstate = model(q, xyz_fixed, loads)
+
+# goals_normal = []
+# nodes_normal = set()
+
+# n = max_step - 1
+# for i in range(1, max_step):  # NOTE: skip spine
+#     if i != 1:  # Look at step 2
+#         continue
+
+#     angle = t_start + (t_end - t_start) * ((i - 1) / (n - 1)) ** t_exp
+#     print(f"Step: {i}, Angle: {degrees(angle)}")
+
+#     for pkey, polyedge in mesh.polyedges(True):
+#         step = pkey2step[pkey]
+#         if step != i:
+#             continue
+#         for node in polyedge:
+#             if node in supports or node in profile_nodes:
+#                 continue
+#             nodes_normal.add(node)
+
+#             print()
+
+#             normal = mesh.vertex_normal(node)
+#             vector = [0., 0., 1.]
+#             cangle = angle_vectors(vector, normal)
+#             print(f"Compas mesh normal angle: {degrees(cangle):.2f}")
+#             goal = NodeNormalAngleGoal(node, vector, target=angle, weight=weight_node_tangent_goal)
+#             goal.init(model)
+#             g = goal(eqstate)
+#             print(f"Node: {node}, Normal angle prediction: {degrees(g.prediction):.2f}, target: {degrees(g.goal):.2f}")
+#             goal = NodeTangentAngleGoal(node, vector, target=angle, weight=weight_node_tangent_goal)
+#             goal.init(model)
+#             g = goal(eqstate)
+#             print(f"Node: {node}, Tangent angle prediction: {degrees(g.prediction):.2f}, target: {degrees(g.goal):.2f}")
+#             goals_normal.append(goal)
+
+# print('{} NodeTangentAngleGoal'.format(len(goals_normal)))
+
 
 # ==========================================================================
 # Optimization parameters
@@ -359,7 +417,7 @@ if optimize:
                 # print(degrees(angle))
                 vector0 = mesh.edge_vector(*edge)
                 ortho = cross_vectors(vector0, [0.0, 0.0, 1.0])
-                vector = rotate_points([vector0], pi / 2 - angle, axis=ortho, origin=[0.0, 0.0, 0.0])[0]
+                vector = rotate_points([vector0], angle, axis=ortho, origin=[0.0, 0.0, 0.0])[0]
                 goal = EdgeDirectionGoal(edge, target=vector, weight=weight_edge_direction_profile_goal)
                 goals_profile_direction.append(goal)
 
@@ -432,22 +490,23 @@ if optimize:
     goals_normal = []
     nodes_normal = set()
     if add_node_tangent_goal:
-        n = max_step - 1
-        for i in range(1, max_step):  # NOTE: skip spine
-            if i != 2:
+        n = max_step
+        for i in range(1, max_step + 1):  # NOTE: skip spine
+            angle = t_start + (t_end - t_start) * ((i - 1) / (n - 1)) ** t_exp
+            if i not in (1, 2):  # Look at step 2
                 continue
 
-            angle = t_start + (t_end - t_start) * ((i - 1) / (n - 1)) ** t_exp
-            print(i, degrees(angle))
+            print(f"Step: {i}, Angle: {degrees(angle)}")
+
             for pkey, polyedge in mesh.polyedges(True):
                 step = pkey2step[pkey]
                 if step != i:
                     continue
                 for node in polyedge:
-                    if node in supports or node in profile_nodes:
+                    if node in supports or node in profile_nodes or node in nodes_normal:
                         continue
                     nodes_normal.add(node)
-                    goal = NodeTangentAngleGoal(node, vector=[0.0, 0.0, 1.0], target=angle, weight=weight_node_tangent_goal)
+                    goal = NodeTangentAngleGoal(node, vector=[1.0, 0.0, 0.0], target=angle, weight=weight_node_tangent_goal)
                     goals_normal.append(goal)
 
         print('{} NodeTangentAngleGoal'.format(len(goals_normal)))
@@ -455,7 +514,7 @@ if optimize:
     # constrain strip edges to a plane
     goals_plane = []
     if add_edge_plane_goal:
-        for step in range(max_step):
+        for step in range(max_step + 1):
             back = 1
             if step == 0:
                 back = 0
@@ -608,8 +667,8 @@ if view:
         tangent_arrows = []
         vkeys = []
 
-        for vkey in mesh.vertices():
-        # for vkey in nodes_normal:
+        # for vkey in mesh.vertices():
+        for vkey in nodes_normal:
             vkeys.append(vkey)
 
             xyz = mesh.vertex_coordinates(vkey)
@@ -640,8 +699,9 @@ if view:
         print(f"\nTangent angle\tMin: {min_angle:.2f}\tMax: {max_angle:.2f}\tMean: {sum(tangent_angles_mesh)/len(tangent_angles_mesh):.2f}\n")
 
         for vkey, angle, tangent_angle, arrow, tarrow in zip(vkeys, angles_mesh, tangent_angles_mesh, arrows, tangent_arrows):
+            # color = cmap(tangent_angle, minval=min_angle, maxval=max_angle)
             color = cmap(tangent_angle, minval=min_angle, maxval=max_angle)
-            # viewer.add(arrow)
+            viewer.add(arrow)
             viewer.add(tarrow, facecolor=color, show_edges=False, opacity=0.8)
             # print(f"node: {vkey}\tangle: {angle:.2f}\ttangent angle: {tangent_angle:.2f}\ttangent angle 2: {90-angle:.2f}")
 

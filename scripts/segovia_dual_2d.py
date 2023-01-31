@@ -140,29 +140,24 @@ length_span_short = 4.0  # short span
 length_span_long = 5.0  # long span
 
 # controls
-optimize = False
+optimize = True
 add_constraints = False
 view = True
 results = False
-export = False
+export = True
 
 ### COARSE MESH ###
 
-from compas.datastructures import Mesh
-from compas_quad.datastructures import QuadMesh
-# vertices, faces = threefold_vault(r, pos_angles, wid_angles, offset1=offset1, offset2=offset2)
-# mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
-mesh = QuadMesh.from_json(os.path.join(DATA, "tripod_dual_2d_mesh.json"))
-mesh.collect_polyedges()
-mesh.collect_strips()
+vertices, faces = threefold_vault(r, pos_angles, wid_angles, offset1=offset1, offset2=offset2)
+mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
 
 ### DENSE MESH ###
 
-# mesh = quadmesh_densification(mesh, target_edge_length)
+mesh = quadmesh_densification(mesh, target_edge_length)
 
 #### PLANAR SMOOTH ###
-# mesh.smooth_centroid(fixed=[vkey for vkey in mesh.vertices_on_boundary() if mesh.vertex_degree(vkey) == 2], kmax=5)
-# mesh.smooth_centroid(fixed=mesh.vertices_on_boundary(), kmax=100)
+mesh.smooth_centroid(fixed=[vkey for vkey in mesh.vertices_on_boundary() if mesh.vertex_degree(vkey) == 2], kmax=5)
+mesh.smooth_centroid(fixed=mesh.vertices_on_boundary(), kmax=100)
 
 ### ELEMENT TYPES ###
 
