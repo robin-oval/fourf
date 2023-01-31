@@ -143,12 +143,14 @@ if view:
             viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.0, 1.0))
     for polyedge in vault_profile_polyedges:
         for edge in pairwise(polyedge):
-            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.0, 1.0, 1.0))
+            x = edge2step[tuple(sorted(edge))] / max_step
+            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.0, 0.2 + 0.8 * x, 0.2 + 0.8 * x))
     for edge in edges0:
-        viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.0, 0.0, 0.0))
+        x = edge2step[tuple(sorted(edge))] / max_step
+        viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.5 * x, 0.5 * x, 0.5 * x))
     for edge in edges1:
         x = edge2step[tuple(sorted(edge))] / max_step
-        linecolor = (0.9 * x, 1.0, 0.9 * x)
+        linecolor = (0.8 * x, 1.0, 0.8 * x)
         viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor)
 
     viewer.show()
