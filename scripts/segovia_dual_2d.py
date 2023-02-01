@@ -107,10 +107,10 @@ add_edge_length_equal_polyedges_goal = False  # True
 weight_edge_length_equal_polyedges_goal = 0.1
 
 # controls
-optimize = True
+optimize = False
 view = True
 results = False
-export = True
+export = False
 
 # ==========================================================================
 # Import dual mesh
@@ -269,43 +269,6 @@ pkeys02step = {pkey: pkey2step[pkey] for pkey in pkeys0}
 
 edges0 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey) if pkey2color[pkey] == color0 and edge not in spine_strip_edges and edge not in profile_edges]
 edges1 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey) if pkey2color[pkey] != color0 and edge not in spine_strip_edges and edge not in profile_edges]
-
-# ==========================================================================
-# Assembly sequence
-# ==========================================================================
-
-# # full profile strips by assembly step - parallel to profile curve
-# # NOTE: assumes all profile polyedges have all the same length
-# profile_strips = {}
-# profile_strips_split = {}
-# strips_set = set()
-
-# for i in range(max_step):
-#     strips = []
-#     strips_split = []
-
-#     for polyedge in profile_polyedges:
-
-#         u, v = polyedge[i], polyedge[i + 1]
-#         strip = mesh.collect_strip(u, v)
-
-#         strip_tuple = tuple(strip)
-#         if strip_tuple in strips_set:
-#             continue
-
-#         strips_set.add(strip_tuple)
-#         strips.append(strip)
-
-#         # split polyedge in two sub-polyedges at the profile edge
-#         # NOTE: order strip to start from boundary
-#         idx = strip.index((u, v))
-#         side_a = strip[:idx]
-#         side_b = list(reversed(strip[idx + 1:]))
-#         strip_split = [side_a, side_b]
-#         strips_split.append(strip_split)
-
-#     profile_strips[i] = strips
-#     profile_strips_split[i] = strips_split
 
 # ==========================================================================
 # Create FD network
