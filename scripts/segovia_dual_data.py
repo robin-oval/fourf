@@ -21,7 +21,7 @@ wid_angles = radians(7.5), radians(7.5), radians(7.5) # triangle to hexagon para
 
 offset1, offset2 = 0.85, 0.95 # offset factor the unsupported and supported edges inward respectively [-]
 
-target_edge_length = 0.15  # [m]
+target_edge_length = 0.25  # [m]
 
 view = True
 
@@ -161,7 +161,7 @@ if view:
         for edge in pairwise(mesh.polyedge_vertices(pkey)):
             if edge in spine_strip_edges_flat:
                 continue
-            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.0, 0.0))
+            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.5, 0.5))
     for strip in spine_strip_edges:
         for edge in strip:
             viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.0, 1.0))
@@ -169,12 +169,12 @@ if view:
         for edge in pairwise(polyedge):
             x = edge2step[tuple(sorted(edge))] / max_step
             viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.0, 0.2 + 0.8 * x, 0.2 + 0.8 * x))
-    for edge in edges0:
-        x = edge2step[tuple(sorted(edge))] / max_step
-        viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.5 * x, 0.5 * x, 0.5 * x))
-    for edge in edges1:
-        x = edge2step[tuple(sorted(edge))] / max_step
-        linecolor = (0.8 * x, 1.0, 0.8 * x)
-        viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor)
+    # for edge in edges0:
+    #     x = edge2step[tuple(sorted(edge))] / max_step
+    #     viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.5 * x, 0.5 * x, 0.5 * x))
+    # for edge in edges1:
+    #     x = edge2step[tuple(sorted(edge))] / max_step
+    #     linecolor = (0.8 * x, 1.0, 0.8 * x)
+    #     viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor)
 
     viewer.show()

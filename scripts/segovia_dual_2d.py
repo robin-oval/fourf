@@ -48,226 +48,300 @@ from jax_fdm.visualization import Viewer
 
 from compas.utilities import pairwise
 
+from compas.datastructures import mesh_weld
 
-### PROJECT ###
+# ==========================================================================
+# Parameters
+# ==========================================================================
 
-# system: masonry vault built using thin-tile vaulting of a herringbone pattern
-# design: threefold arch like monkey saddle with creases
-# objectives/constraints to integrate:
-# - fit desired space -> target XY projection
-# - planar parts of the spine for simple centering -> plane constraint
-# - starting assembly without centering from spine -> succession of rising arches parallel to the spine
-#   (directly using the edge slope objective or indirectly using the residual force objective)
-# - regular width of the brick courses -> constant length of the edges in the transverse direction of the spine
 
-# TO ADD:
+brick_length = 0.225   # [m]
+brick_width = 0.1   # [m]
+brick_thickness = 0.025  # [m]
+brick_layers = 3  # [-]
+brick_density = 16.5  # [kN/m3]
+comp_strength = 5.0  # [MPa]
 
-# - constrain spine polyedges to be straight with plane goals
-# - sequential form finding
-# - add the X and Y coordinates of the supported nodes (except those of the spine) as parameters
-# and add goals to guide them on radial lines
-# - add loads as parameters to update them during form finding to match the self-weight
+target_edge_length = 0.25  # 0.25 [m] for mesh subdivision
 
-### INPUTS ###
-
-r = 2.7  # circumcircle radius [m]
-pos_angles = 0.0, 3 * pi / 4, 3 * pi / 2  # triangle parameterisation angle [radians]
-wid_angles = pi / 6, pi / 6, pi / 6  # triangle to hexagon parameterisation angle [radians]
-offset1, offset2 = 0.9, 0.95  # offset factor the unsupported and supported edges inward respectively [-]
-target_edge_length = 0.35  # 0.25 [m]
-support_raised_height = [0.0, 0.0, 0.0]  # raised height of each support [m]
-
-brick_length, brick_width, brick_thickness = 0.24, 0.125, 0.04  # [m]
-brick_layers = 0  # [-]
-brick_density = 12.0  # [kN/m3]
-comp_strength = 6.0  # [MPa]
-
-course_width = 0.125 * 1.5
-
-dead_load = 0.0  # dead load [kN/m2]
-pz = - (brick_density * brick_thickness * brick_layers) + dead_load  # vertical load (approximated self-weight + uniform dead load) [kN/m2]
+dead_load = 1.0  # dead load [kN/m2]
+pz = 0.0
 q0 = -1.0  # initial force densities [kN/m]
 
 opt = LBFGSB  # optimization solver
 qmin, qmax = None, -1e-1  # bound on force densities [kN/m]
-add_supports_as_parameters = True
-ctol = 1.0  # 0.5, bound on supports X and Y positions
 maxiter = 5000  # maximum number of iterations
 tol = 1e-6  # optimization tolerance
 
 # aim for target positions
-add_node_target_goal = True
-cross_height = 0.0  # height of spine cross [m]
-perimeter_height = 0.0  # height of perimetral arches [m]
-weight_node_target_goal = 10.0
+add_node_spine_xyz_goal = True
+weight_node_spine_xyz_goal = 100.0
 
-# keep spine planar
-add_spine_planarity_goal = True
+# # keep spine planar
+add_spine_planarity_goal = False
 weight_spine_planarity_goal = 10.0
 
-# keep spine planar
-add_profile_planarity_goal = True
+# # keep profile planar
+add_profile_planarity_goal = False  # True
 weight_profile_planarity_goal = 10.0
 
-# edge length goal to obtain constant brick course widths
-add_edge_length_profile_goal = True
-weight_edge_length_profile_goal = 10.0
-
-# equal edge length at the spine
-add_edge_length_equal_spine_goal = True  # False
-weight_edge_length_equal_spine_goal = 1.0
-
-# edge equalize length goal to obtain constant brick course widths
-add_edge_length_equal_strips_goal = False
-weight_edge_length_equal_strips_goal = 0.1
+# all edges length goal
+add_edge_length_goal = True
+length_factor = 0.8
+weight_edge_length_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
-add_edge_length_strips_goal = True
+add_edge_length_profile_goal = False
+weight_edge_length_profile_goal = 1.0
+
+# edge length goal to obtain constant brick course widths
+add_edge_length_strips_goal = False
 weight_edge_length_strips_goal = 0.1  # 0.1
 
+# edge equalize length goal to obtain constant brick course widths
+add_edge_length_equal_strips_goal = False  # True
+weight_edge_length_equal_strips_goal = 0.1
+
 # edge equalize length goals to polyedges parallel to spine
-add_edge_length_equal_polyedges_goal = True
-weight_edge_length_equal_polyedges_goal = 0.1  # 0.1
-
-# plane goal
-add_edge_plane_goal = True
-weight_edge_plane_goal = 0.1
-
-# spans length goal
-add_span_length_goal = True  # False
-weight_span_length_goal = 1.0
-length_span_short = 4.0  # short span
-length_span_long = 5.0  # long span
+add_edge_length_equal_polyedges_goal = False  # True
+weight_edge_length_equal_polyedges_goal = 0.1
 
 # controls
 optimize = True
-add_constraints = False
 view = True
 results = False
 export = True
 
-### COARSE MESH ###
+# ==========================================================================
+# Import dual mesh
+# ==========================================================================
 
-vertices, faces = threefold_vault(r, pos_angles, wid_angles, offset1=offset1, offset2=offset2)
-mesh = CoarseQuadMesh.from_vertices_and_faces(vertices, faces)
+filepath = os.path.abspath(os.path.join(DATA, "tripod_dual_2d_subd_mesh.json"))
+mesh = CoarseQuadMesh.from_json(filepath)
 
-### DENSE MESH ###
+# ==========================================================================
+# Modify dual mesh
+# ==========================================================================
 
-mesh = quadmesh_densification(mesh, target_edge_length)
+deletable = []
+for fkey in mesh.faces():
+    if len(mesh.face_vertices(fkey)) != 4:
+        deletable.append(fkey)
 
-#### PLANAR SMOOTH ###
-mesh.smooth_centroid(fixed=[vkey for vkey in mesh.vertices_on_boundary() if mesh.vertex_degree(vkey) == 2], kmax=5)
-mesh.smooth_centroid(fixed=mesh.vertices_on_boundary(), kmax=100)
+assert len(deletable) == 1
 
-### ELEMENT TYPES ###
+for dkey in deletable:
+    hexagon = mesh.face_vertices(dkey)
+    mesh.delete_face(dkey)
 
-supp_pkeys = support_shortest_boundary_polyedges(mesh)
-supports = set([vkey for pkey in supp_pkeys for vkey in mesh.polyedge_vertices(pkey)])
+mesh.collect_strips()
 
-pkey2type = polyedge_types(mesh, supp_pkeys)
+for skey, strip in mesh.strips(True):
+    if strip[0][0] in hexagon or strip[-1][0] in hexagon:
+        mesh.strip_density(skey, 1)
+    else:
+        mesh.set_strip_density_target(skey, target_edge_length)
 
-edge2color = quad_mesh_polyedge_2_coloring(mesh, edge_output=True)
-color_ortho, color_paral = None, None
-for pkey, ptype in pkey2type.items():
-    if ptype == 'spine':
-        color_paral = edge2color[tuple(mesh.polyedge_vertices(pkey)[:2])]
-        color_ortho = 1 - color_paral
-        break
-edges_ortho = [edge for edge, color in edge2color.items() if color == color_ortho]
+mesh.densification()
 
-### ASSEMBLY SEQUENCE ###
+mesh = mesh.dense_mesh()
 
-pkey2step = quadmesh_polyedge_assembly_sequence(mesh, pkey2type)
-steps = set([step for step in pkey2step.values() if step is not None])
-min_step, max_step = int(min(steps)), int(max(steps))
+assert len(mesh.vertices_on_boundaries()) == 2, f"{len(mesh.vertices_on_boundaries())} boundaries!"
 
-### DATA CONVERSION ###
-network = mesh_to_fdnetwork(mesh, supports, pz, q0)
+for vertices in mesh.vertices_on_boundaries():
+    if len(vertices) == 7:
+        mesh.add_face(vertices[:-1])
 
-# singularity node
-snode = [node for node in network.nodes() if network.degree(node) == 6].pop()
+mesh = mesh_weld(mesh)
+mesh.collect_polyedges()
 
-# spine polyedges (from singularity to supported boundary)
+# ==========================================================================
+# Supports
+# ==========================================================================
+
+bdrypkey2length = {}
+for pkey, polyedge in mesh.polyedges(data=True):
+    if mesh.is_edge_on_boundary(polyedge[0], polyedge[1]):
+        bdrypkey2length[pkey] = mesh.polyedge_length(polyedge)
+avrg_length = sum(bdrypkey2length.values()) / len(bdrypkey2length)
+supported_pkeys = set([pkey for pkey, length in bdrypkey2length.items() if length < avrg_length])
+print('supported_pkeys', supported_pkeys)
+
+# support polyedges
+support_polyedges = [polyedge for pkey, polyedge in mesh.polyedges(data=True) if pkey in supported_pkeys]
+
+# support nodes
+supported_vkeys = set([vkey for pkey in supported_pkeys for vkey in mesh.polyedge_vertices(pkey)])
+supports = supported_vkeys
+
+# ==========================================================================
+# Spine
+# ==========================================================================
+
+# spine polyedges
+spine_pkeys = set()
 spine_polyedges = []
 for pkey, polyedge in mesh.polyedges(data=True):
-    cdt1 = mesh.vertex_degree(polyedge[0]) == 6 and polyedge[-1] in supports
-    cdt2 = mesh.vertex_degree(polyedge[-1]) == 6 and polyedge[0] in supports
-    if cdt1 or cdt2:
-        polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
-        spine_polyedges.append(polyedge)
+    if polyedge[0] in supported_vkeys:
+        for u, v in pairwise(polyedge):
+            cdt0 = mesh.halfedge[u][v] is not None and len(mesh.face_vertices(mesh.halfedge[u][v])) == 6
+            cdt1 = mesh.halfedge[v][u] is not None and len(mesh.face_vertices(mesh.halfedge[v][u])) == 6
+            if cdt0 or cdt1:
+                spine_polyedges.append(polyedge)
+                spine_pkeys.add(pkey)
+print('spine_pkeys', spine_pkeys)
 
 # spine nodes
 spine_nodes = set()
 for polyedge in spine_polyedges:
     spine_nodes.update(polyedge)
 
-# profile curves (from singularity to unsupported boundary)
+# spine strips
+spine_strip_edges = []
+for fkey in mesh.faces():
+    if mesh.face_degree(fkey) == 6:
+        for u, v in mesh.face_halfedges(fkey):
+            strip_edges = mesh.collect_strip(v, u, both_sides=False)
+            if strip_edges[-1][-1] in supported_vkeys:
+                spine_strip_edges.append(strip_edges)
+
+# spine-split supports polyedge
+support_polyedges_spine_split = []
+for polyedge in support_polyedges:
+    i = 0
+    side_a = []
+    side_b = []
+    for node in polyedge:
+        if node in spine_nodes:
+            i += 1
+        if i <= 1:
+            side_a.append(node)
+        else:
+            side_b.append(node)
+    side_a = list(reversed(side_a))
+    support_polyedges_spine_split.append([side_a, side_b])
+
+# ==========================================================================
+# Profile
+# ==========================================================================
+
+# profile polyedges
 profile_polyedges = []
-for pkey, polyedge in mesh.polyedges(data=True):
-    cdt1 = mesh.vertex_degree(polyedge[0]) == 6 and polyedge[-1] not in supports
-    cdt2 = mesh.vertex_degree(polyedge[-1]) == 6 and polyedge[0] not in supports
-    if cdt1 or cdt2:
-        polyedge = list(reversed(polyedge)) if mesh.vertex_degree(polyedge[-1]) == 6 else polyedge
-        profile_polyedges.append(polyedge)
+for fkey in mesh.faces():
+    if len(mesh.face_vertices(fkey)) == 6:
+        for u0, v0 in mesh.face_halfedges(fkey):
+            for u, v in ([u0, v0], [v0, u0]):
+                polyedge = mesh.collect_polyedge(u, v, both_sides=False)
+                if polyedge[-1] not in supported_vkeys:
+                    profile_polyedges.append(polyedge)
 
-# full profile strips by assembly step - parallel to profile curve
-# NOTE: assumes all profile polyedges have all the same length
-profile_strips = {}
-profile_strips_split = {}
-for i in range(max_step):
-    strips = []
-    strips_split = []
-    for polyedge in profile_polyedges:
-        u, v = polyedge[i], polyedge[i + 1]
-        strip = mesh.collect_strip(u, v)
-        strips.append(strip)
+# profile nodes
+profile_nodes = set()
+for polyedge in profile_polyedges:
+    profile_nodes.update(polyedge)
 
-        # split polyedge in two sub-polyedges at the profile edge
-        # NOTE: order strip to start from boundary
-        idx = strip.index((u, v))
-        side_a = strip[:idx]
-        side_b = list(reversed(strip[idx + 1:]))
-        strip_split = [side_a, side_b]
-        strips_split.append(strip_split)
+# profile edges
+profile_edges = set([edge for polyedge in profile_polyedges for edge in pairwise(polyedge)])
 
-    profile_strips[i] = strips
-    profile_strips_split[i] = strips_split
+# ==========================================================================
+# Assembly sequence
+# ==========================================================================
 
-### FDM  ###
+pkey2type = polyedge_types(mesh, supported_pkeys, dual=True)
+pkey2step = quadmesh_polyedge_assembly_sequence(mesh, pkey2type)
+vkey2step = {vkey: step for pkey, step in pkey2step.items() for vkey in mesh.polyedge_vertices(pkey) if step is not None}
+steps = set([step for step in pkey2step.values() if step is not None])
+min_step, max_step = int(min(steps)), int(max(steps))
 
-eqnetwork = fdm(network)
+edge2step = {}
+for u, v in mesh.edges():
+    edge2step[tuple(sorted((u, v)))] = max([vkey2step[u], vkey2step[v]])
+
+step2edges = {step: [] for step in range(min_step, max_step + 1)}
+for u, v in mesh.edges():
+    step = max([vkey2step[u], vkey2step[v]])
+    step2edges[step].append((u, v))
+
+pkey2color = quad_mesh_polyedge_2_coloring(mesh)
+color0 = pkey2color[next(iter(spine_pkeys))]
+pkeys0 = set([pkey for pkey in mesh.polyedges() if pkey2color[pkey] == color0])
+pkeys02step = {pkey: pkey2step[pkey] for pkey in pkeys0}
+
+edges0 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey) if pkey2color[pkey] == color0 and edge not in spine_strip_edges and edge not in profile_edges]
+edges1 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey) if pkey2color[pkey] != color0 and edge not in spine_strip_edges and edge not in profile_edges]
+
+# ==========================================================================
+# Assembly sequence
+# ==========================================================================
+
+# # full profile strips by assembly step - parallel to profile curve
+# # NOTE: assumes all profile polyedges have all the same length
+# profile_strips = {}
+# profile_strips_split = {}
+# strips_set = set()
+
+# for i in range(max_step):
+#     strips = []
+#     strips_split = []
+
+#     for polyedge in profile_polyedges:
+
+#         u, v = polyedge[i], polyedge[i + 1]
+#         strip = mesh.collect_strip(u, v)
+
+#         strip_tuple = tuple(strip)
+#         if strip_tuple in strips_set:
+#             continue
+
+#         strips_set.add(strip_tuple)
+#         strips.append(strip)
+
+#         # split polyedge in two sub-polyedges at the profile edge
+#         # NOTE: order strip to start from boundary
+#         idx = strip.index((u, v))
+#         side_a = strip[:idx]
+#         side_b = list(reversed(strip[idx + 1:]))
+#         strip_split = [side_a, side_b]
+#         strips_split.append(strip_split)
+
+#     profile_strips[i] = strips
+#     profile_strips_split[i] = strips_split
+
+# ==========================================================================
+# Create FD network
+# ==========================================================================
+
+network = mesh_to_fdnetwork(mesh, supported_vkeys, pz, q0)
+network0 = network.copy()
+
+# ==========================================================================
+# Parameters
+# ==========================================================================
 
 if optimize:
 
-    ### PARAMETERS ###
     parameters = []
 
     for edge in network.edges():
         parameter = EdgeForceDensityParameter(edge, qmin, qmax)
         parameters.append(parameter)
 
-    parameters_supports = []
-    if add_supports_as_parameters:
-        for node in network.nodes_anchors():
-            x, y, z = network.node_coordinates(node)
-            for coordinate, parameter in zip((x, y), (NodeAnchorXParameter, NodeAnchorYParameter)):
-                parameter = parameter(node, coordinate - ctol, coordinate + ctol)
-                parameters_supports.append(parameter)
+# ==========================================================================
+# Goals I
+# ==========================================================================
 
-    ### GOALS ###
     print()
 
-    # target position of spine central node
-    goals_target = []
-    if add_node_target_goal:
-        for node in network.nodes():
-            if network.degree(node) == 6:
-                x, y, z = network.node_coordinates(node)
-                goal = NodePointGoal(node, target=[x, y, cross_height], weight=weight_node_target_goal)
-                goals_target.append(goal)
-        print('{} NodePointGoal'.format(len(goals_target)))
+    # spine xyz
+    goals_spine_xyz = []
+    if add_node_spine_xyz_goal:
+        for node in spine_nodes:
+            point = network.node_coordinates(node)
+            goal = NodePointGoal(node, target=point, weight=weight_node_spine_xyz_goal)
+            goals_spine_xyz.append(goal)
+        print('{} SpineNodesPointGoal'.format(len(goals_spine_xyz)))
 
-    # spline planarity
+    # spine planarity
     goals_spine_planarity = []
     if add_spine_planarity_goal:
         for polyedge in spine_polyedges:
@@ -290,7 +364,7 @@ if optimize:
             plane = (origin, normal)
             for node in polyedge[1:]:
                 goal = NodePlaneGoal(node, plane, weight_profile_planarity_goal)
-                goals_spine_planarity.append(goal)
+                goals_profile_planarity.append(goal)
         print('{} ProfilePlanarityGoal'.format(len(goals_spine_planarity)))
 
     # length of profile curves edges
@@ -300,40 +374,17 @@ if optimize:
 
             for i, edge in enumerate(pairwise(polyedge)):
                 factor = 1.0
-                if i == 0:
-                    factor = 2.0
-                goal = EdgeLengthGoal(edge, target=course_width * factor, weight=weight_edge_length_profile_goal)
+                # if i == 0:
+                #     factor = 2.0
+
+                if not network.has_edge(u, v):
+                    u, v = v, u
+                edge = (u, v)
+                goal = EdgeLengthGoal(edge, target=target_edge_length * factor, weight=weight_edge_length_profile_goal)
 
                 goals_length_profile.append(goal)
 
         print('{} EdgeProfileLengthGoal'.format(len(goals_length_profile)))
-
-    goals_length_equal_spine = []
-    if add_edge_length_equal_spine_goal:
-        for polyedge in spine_polyedges:
-            edges = list(pairwise(polyedge))
-            goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_spine_goal)
-            goals_length_equal_spine.append(goal)
-        print('{} EdgeSpineEqualLengthGoal'.format(len(goals_length_equal_spine)))
-
-    goals_length_spans = []
-    tie_edges = []
-    if add_span_length_goal:
-        spine_supports = [node for node in spine_nodes if node in supports]
-        # combos = list(combinations(spine_supports, 2))
-        # print([mesh.edge_length(u, v) for u,v in combos])
-        sorted_edges = sorted(combinations(spine_supports, 2), key=lambda x: mesh.edge_length(*x))
-        # print([mesh.edge_length(u, v) for u,v in sorted_edges])
-        for i, edge in enumerate(sorted_edges):
-            length_span = length_span_short
-            if i != 0:
-                length_span = length_span_long
-            network.add_edge(*edge)
-            tie_edges.append(edge)
-            goal = EdgeLengthGoal(edge, length_span, weight=weight_span_length_goal)
-            goals_length_spans.append(goal)
-            parameters.append(EdgeForceDensityParameter(edge))
-        print('{} SpansLengthGoal'.format(len(goals_length_spans)))
 
     # edge equalize length goals to polyedges parallel to spine
     goals_length_equal_polyedges = []
@@ -353,32 +404,50 @@ if optimize:
 
     goals_length_equal_strips = []
     if add_edge_length_equal_strips_goal:
-        for step, strips in profile_strips.items():
-            if step == 0:
-                continue
-            for strip in strips:
-                edges = strip
-                goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_strips_goal)
-                goals_length_equal_strips.append(goal)
+
+        for i in range(0, max_step + 1):
+            edges = step2edges[i]
+            # edges = [edge for edge in step2edges[i] if edge in edges1]
+            goal = EdgesLengthEqualGoal(edges, weight=weight_edge_length_equal_strips_goal)
+            goals_length_equal_strips.append(goal)
+
         print('{} EdgeStripsEqualLengthGoal'.format(len(goals_length_equal_strips)))
 
+    goals_length = []
+    if add_edge_length_goal:
+        for u, v in edges0 + edges1:
+            if (u, v) in profile_edges or (v, u) in profile_edges:
+                continue
+            if not network.has_edge(u, v):
+                u, v = v, u
+            edge = (u, v)
+            length = mesh.edge_length(*edge) * length_factor
+            goal = EdgeLengthGoal(edge, length)#  weight_edge_length_goal)
+            goals_length.append(goal)
 
+        print('{} EdgeReducedLengthGoal'.format(len(goals_length)))
+
+# ==========================================================================
+# Loss function
+# ==========================================================================
 
     loss = Loss(
-                SquaredError(goals=goals_target, name='NodePointGoal', alpha=1.0),
+                SquaredError(goals=goals_spine_xyz, name='NodeSpineXYZGoal', alpha=1.0),
                 SquaredError(goals=goals_spine_planarity, name='EdgeSpinePlanarityGoal', alpha=1.0),
                 SquaredError(goals=goals_profile_planarity, name='EdgeProfilePlanarityGoal', alpha=1.0),
                 SquaredError(goals=goals_length_profile, name='EdgeProfileLengthGoal', alpha=1.0),
-                SquaredError(goals=goals_length_spans, name='NodesSpansLengthGoal', alpha=1.0),
                 PredictionError(goals=goals_length_equal_polyedges, name='EdgesLengthEqualPolyedgesGoal', alpha=1.0),
                 PredictionError(goals=goals_length_equal_strips, name='EdgesLengthEqualStripsGoal', alpha=1.0),
-                SquaredError(goals=goals_length_equal_spine, name='EdgeSpineLengthEqualGoal', alpha=1.0),
+                SquaredError(goals=goals_length, name='EdgesLengthGoal', alpha=1.0),
                 )
 
-    ### CONSTRAINED FORM FINDING I ###
+# ==========================================================================
+# Constrained form-finding
+# ==========================================================================
+
     network = constrained_fdm(network,
                               optimizer=opt(),
-                              parameters=parameters + parameters_supports,
+                              parameters=parameters,
                               loss=loss,
                               maxiter=maxiter,
                               tol=tol
@@ -386,129 +455,97 @@ if optimize:
 
     cnetwork1 = network.copy()
 
-    ### CONSTRAINED FORM FINDING II ###
-
-    if add_node_target_goal:
-        for polyedge in spine_polyedges:
-            for node in polyedge[1:-1]:
-                if network.degree(node) == 6:
-                    continue
-                x, y, z = network.node_coordinates(node)
-                goal = NodePointGoal(node, target=[x, y, z], weight=weight_node_target_goal)
-                goals_target.append(goal)
-        print('{} NodePointGoal'.format(len(goals_target)))
-
-    goals_plane = []
-    if add_edge_plane_goal:
-        for step in range(max_step):
-            # back = 1
-            if step == 0:
-                step_back = 0
-            elif step == 1:
-                step_back = 0
-            else:
-                step_back = 0
-
-            for strips_a, strips_b in zip(profile_strips_split[step_back], profile_strips_split[step]):
-                for strip_a, strip_b in zip(strips_a, strips_b):
-                    for edge_a, edge_b in zip(strip_a, strip_b):
-                        u, v = edge_b
-                        if u in supports and v in supports:
-                            continue
-                        vector = network.edge_vector(*edge_a)
-                        origin = network.node_coordinates(u)
-                        normal = cross_vectors(vector, [0.0, 0.0, 1.0])
-                        plane = (origin, normal)
-                        goal = NodePlaneGoal(v, plane, weight=weight_edge_plane_goal)
-                        goals_plane.append(goal)
-
-        print('{} NodesStripsPlaneGoal'.format(len(goals_plane)))
-
-    goals_length_strips = []
-    if add_edge_length_strips_goal:
-        for i, strips_split in profile_strips_split.items():
-            for strip in strips_split:
-                for side in strip:
-                    indices = list(range(len(side)))
-                    for j in indices:
-                        edge = side[j]
-                        goal = EdgeLengthGoal(edge, target=course_width, weight=weight_edge_length_strips_goal)
-                        goals_length_strips.append(goal)
-        print('{} EdgeStripsLengthGoal'.format(len(goals_length_strips)))
-
-    loss = Loss(
-                SquaredError(goals=goals_target, name='NodePointGoal', alpha=1.0),
-                SquaredError(goals=goals_spine_planarity, name='EdgeSpinePlanarityGoal', alpha=1.0),
-                SquaredError(goals=goals_profile_planarity, name='EdgeProfilePlanarityGoal', alpha=1.0),
-                SquaredError(goals=goals_length_profile, name='EdgeProfileLengthGoal', alpha=1.0),
-                SquaredError(goals=goals_length_strips, name='EdgeLengthStripsGoal', alpha=1.0),
-                PredictionError(goals=goals_length_equal_strips, name='EdgesLengthEqualStripsGoal', alpha=1.0),
-                PredictionError(goals=goals_length_equal_polyedges, name='EdgesLengthEqualPolyedgesGoal', alpha=1.0),
-                SquaredError(goals=goals_length_equal_spine, name='EdgeSpineLengthEqualGoal', alpha=1.0),
-                SquaredError(goals=goals_plane, name='NodePlaneGoal', alpha=1.0),
-                SquaredError(goals=goals_length_spans, name='NodesSpansLengthGoal', alpha=1.0),
-                )
-
-    network = constrained_fdm(network,
-                              optimizer=opt(),
-                              parameters=parameters + parameters_supports,
-                              loss=loss,
-                              maxiter=maxiter,
-                              tol=tol * 2
-                              )
-
-    cnetwork2 = network.copy()
-
-    ### EXPORT ###
+# ==========================================================================
+# Export
+# ==========================================================================
 
     # update mesh coordinates
     for vkey in mesh.vertices():
         xyz = network.node_coordinates(vkey)
         mesh.vertex_attributes(vkey, names="xyz", values=xyz)
 
-    print("\nDeleting tie edges for export...")
-    for u, v in tie_edges:
-        network.delete_edge(u, v)
-
     if export:
         for name, datastruct in {"network": network, "mesh": mesh}.items():
-            filepath = os.path.join(DATA, f"tripod_{name}_2d.json")
+            filepath = os.path.join(DATA, f"tripod_{name}_dual_2d.json")
             datastruct.to_json(filepath)
         print("Exported JSON files!")
 
-### VIEWER ###
+# ==========================================================================
+# Visualizationj
+# ==========================================================================
 
 if view:
     viewer = Viewer(width=1600, height=900, show_grid=False)
+
+    viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
+
+    # viewer.add(network0, as_wireframe=True, show_points=False)
+
+    # profile lines
+    # for line in profile_lines:
+    #     viewer.add(line)
+
+    for vkey in mesh.vertices():
+        xyz = network.node_coordinates(vkey)
+        mesh.vertex_attributes(vkey, names="xyz", values=xyz)
 
     # viewer.add(mesh)
 
     # viewer.add(eqnetwork, as_wireframe=True)
 
-    viewer.add(cnetwork1, as_wireframe=True, show_points=False)
+    # viewer.add(cnetwork1, as_wireframe=True, show_points=False)
 
     # for polyedge in spine_polyedges:
     #     for i, edge in enumerate(pairwise(polyedge)):
     #         line = Line(*mesh.edge_coordinates(*edge))
     #         viewer.add(line, linewidth=4.)
 
-    maxs = max_step
+    mins = 1
+    maxs = max_step + 1
     cmap = ColorMap.from_mpl("viridis")
-    for i in range(maxs):
+    for i in range(mins, maxs):
+        edges = step2edges[i]
+        for edge in edges:
+            line = Line(*network.edge_coordinates(*edge))
+            # viewer.add(line, linecolor=cmap(i, minval=mins, maxval=maxs), linewidth=2.)
 
-    # for polyedge in profile_polyedges:
-    #     for i, edge in enumerate(pairwise(polyedge)):
-    #         line = Line(*mesh.edge_coordinates(*edge))
-    #         linecolor = cmap(i, maxval=maxs)
-    #         viewer.add(line, linewidth=4., linecolor=linecolor)
-        for strip in profile_strips[i]:
-            for edge in strip:
-                line = Line(*network.edge_coordinates(*edge))
-                viewer.add(line, linecolor=cmap(i, maxval=maxs), linewidth=5.)
+    #     for strip in profile_strips[i]:
+    #         for edge in strip:
+    #             line = Line(*network.edge_coordinates(*edge))
+    #             viewer.add(line, linecolor=cmap(i, maxval=maxs), linewidth=5.)
 
-            for polyedge in zip(*strip):
-                polyline = Polyline([network.node_coordinates(n) for n in polyedge])
-                viewer.add(polyline)
+    #         for polyedge in zip(*strip):
+    #             polyline = Polyline([network.node_coordinates(n) for n in polyedge])
+    #             viewer.add(polyline)
 
+    spine_strip_edges_flat = [edge for edges in spine_strip_edges for edge in edges]
+
+    # support polyedges
+    for pkey in supported_pkeys:
+        for edge in pairwise(mesh.polyedge_vertices(pkey)):
+            if edge in spine_strip_edges_flat:
+                continue
+            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.5, 0.5), linewidth=2.)
+    # spine strips
+    for strip in spine_strip_edges:
+        for edge in strip:
+            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(1.0, 0.0, 1.0), linewidth=2.)
+
+    # polyedges
+    for polyedge in profile_polyedges:
+        for edge in pairwise(polyedge):
+            x = edge2step[tuple(sorted(edge))] / max_step
+            viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.0, 0.2 + 0.8 * x, 0.2 + 0.8 * x), linewidth=2.0)
+
+    # edges 0
+    for edge in edges0:
+        x = edge2step[tuple(sorted(edge))] / max_step
+        viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.5 * x, 0.5 * x, 0.5 * x), linewidth=2.)
+
+    # edges 1
+    for edge in edges1:
+        x = edge2step[tuple(sorted(edge))] / max_step
+        linecolor = (0.8 * x, 1.0, 0.8 * x)
+        viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor, linewidth=2.)
 
     viewer.show()
