@@ -294,6 +294,7 @@ for polyedge in profile_polyedges:
         line = Line(start, end)
         profile_lines.append(line)
 
+# edge direction at supports
 for pkey, polyedge in mesh.polyedges(True):
     if pkey2step[pkey] != -1:
         continue

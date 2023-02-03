@@ -192,7 +192,6 @@ for node in network.nodes():
     vertex_area = mesh.vertex_area(node)
     network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
 
-# network.edges_forcedensities(-2.0)
 
 # ==========================================================================
 # Network parts
@@ -235,7 +234,7 @@ spine_nodes = set()
 for polyedge in spine_polyedges:
     spine_nodes.update(polyedge)
 
-# profile curves (from singularity to unsupported boundary)
+# profile polyedges (from singularity to unsupported boundary)
 profile_polyedges = []
 for pkey, polyedge in mesh.polyedges(data=True):
     cdt1 = mesh.vertex_degree(polyedge[0]) == 6 and polyedge[-1] not in supports

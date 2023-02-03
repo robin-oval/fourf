@@ -3,15 +3,20 @@ import os
 from collections import defaultdict
 from itertools import combinations
 
-from math import pi, radians, degrees
+from math import pi, radians, degrees, fabs
 
 from numpy import mean, std
 
 from operator import itemgetter
 
+from compas.datastructures import network_find_cycles, Mesh
+
 from compas.colors import Color, ColorMap
 from compas.geometry import Line, Polyline, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
-from compas.geometry import add_vectors, scale_vector, normalize_vector
+from compas.geometry import add_vectors, scale_vector, normalize_vector, angle_vectors, project_point_plane, normalize_vector, subtract_vectors
+from compas.geometry import dot_vectors, Point
+
+from compas_view2.shapes import Arrow
 
 from compas_quad.datastructures import CoarseQuadMesh
 from compas_quad.datastructures import QuadMesh
@@ -30,7 +35,7 @@ from fourf.view import view_f4
 from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
-from jax_fdm.optimization import LBFGSB, SLSQP
+from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder
 from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
 from jax_fdm.parameters import NodeLoadXParameter, NodeLoadYParameter, NodeLoadZParameter
 
@@ -59,7 +64,6 @@ from compas.datastructures import mesh_weld
 # Parameters
 # ==========================================================================
 
-
 brick_length = 0.225   # [m]
 brick_width = 0.1   # [m]
 brick_thickness = 0.025  # [m]
@@ -79,43 +83,43 @@ tol = 1e-9  # optimization tolerance
 
 # keep horizontal projection fixed
 add_node_xy_goal = True
-weight_node_xy_goal = 10.0
+weight_node_xy_goal = 5.0
 
 # best-fit nodes
 add_node_bestfit_goal = True
-weight_node_bestfit_goal = 10.0
+weight_node_bestfit_goal = 5.0
+
+# node tangent goal
+add_node_tangent_goal = False
+weight_node_tangent_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
 # add_edge_length_profile_goal = False
 # weight_edge_length_profile_goal = 1.0
 
-# equal edge length at the spine
-# add_edge_length_equal_spine_goal = False  # False
-# weight_edge_length_equal_spine_goal = 1.0
-
-# profile edges direction goal
+# profile edges direction goal TODO: it is angle!
 add_edge_direction_profile_goal = True
-s_start, s_end, s_exp = radians(45), radians(15), 1.0  # 70, 30 minimum and maximum angles and variation exponent [-]
+l_start, l_end, l_exp = radians(45), radians(15), 1.0  # long spans, angle bounds and variation exponent [-]
+s_start, s_end, s_exp = radians(30), radians(15), 1.0  # short spans, angle bounds and variation exponent [-]
 weight_edge_direction_profile_goal = 1.0
 
-# edge length goal to obtain constant brick course widths
-add_edge_length_strips_goal = False
-weight_edge_length_strips_goal = 0.1  # 0.1
-
 # equalize length of edges parallel to the spine
-add_edge0_length_equal_goal = False  # True
+add_edge0_length_equal_goal = False
 weight_edge0_length_equal_goal = 1.0
 
 # edge equalize length of edges perpendicular to the spine
-add_edge1_length_equal_goal = True  # True
+add_edge1_length_equal_goal = True
 weight_edge1_length_equal_goal = 1.0  # 0.1
 
 # controls
-optimize = False
-add_constraints = False
-view = True
+export = True
 results = False
-export = False
+view = True
+view_node_tangents = False
+
+# sequential form finding
+max_step_sequential = 5
+max_step_sequential_short = 3
 
 # ==========================================================================
 # Import datastructures
@@ -221,6 +225,32 @@ for polyedge in profile_polyedges:
 # profile edges
 profile_edges = set([edge for polyedge in profile_polyedges for edge in pairwise(polyedge)])
 
+# profile strips
+profile_strips = []
+for fkey in mesh.faces():
+    if mesh.face_degree(fkey) == 6:
+        for u, v in mesh.face_halfedges(fkey):
+            strip_edges = mesh.collect_strip(v, u, both_sides=False)
+            if strip_edges[-1][-1] not in supported_vkeys:
+                profile_strips.append(strip_edges)
+assert len(profile_strips) == 3
+
+profile_polyedges_from_strips = []
+profile_span_short_polyedges = []
+
+for strip in profile_strips:
+    polyedges = list(zip(*strip))
+    profile_polyedges_from_strips.append(polyedges)
+
+    test_edge = polyedges[0][:2]
+    vr = normalize_vector(mesh.edge_vector(*test_edge))
+    dot = dot_vectors(vr, [1., 0., 0.])
+    if fabs(1.0 - dot) < 0.1:
+        profile_span_short_polyedges.extend(polyedges)
+
+assert len(profile_span_short_polyedges) == 2
+profile_edges_span_short = set([edge for polyedge in profile_span_short_polyedges for edge in pairwise(polyedge)])
+
 # ==========================================================================
 # Assembly sequence
 # ==========================================================================
@@ -249,6 +279,27 @@ edges0 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey
 edges1 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey) if pkey2color[pkey] != color0 and edge not in spine_strip_edges and edge not in profile_edges]
 
 # ==========================================================================
+# Short span
+# ==========================================================================
+
+edges_span_short = set()
+nodes_span_short = set()
+for polyedge in profile_span_short_polyedges:
+    for u, v in pairwise(polyedge):
+        strip = mesh.collect_strip(u, v)
+        for edge in strip:
+            edges_span_short.add(edge)
+            for node in edge:
+                nodes_span_short.add(node)
+
+for pkey, polyedge in mesh.polyedges(True):
+    if pkey2type[pkey] != "span":
+        continue
+    if any((node in nodes_span_short for node in polyedge)):
+        edges = list(pairwise(polyedge))
+        edges_span_short.update(edges)
+
+# ==========================================================================
 # Update network
 # ==========================================================================
 
@@ -256,6 +307,7 @@ for node in network.nodes():
     vertex_area = mesh.vertex_area(node)
     network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
 
+network_base = network.copy()
 network0 = network.copy()
 
 for node in spine_nodes:
@@ -278,18 +330,21 @@ for node in spine_nodes:
 
 print(network)
 networks = {0: network.copy()}
-nodes_step_last = []
-for step in range(1, 2):
 
-    print(f"***Step: {step}***")
+for step in range(1, max_step_sequential + 1):
+
+    print(f"\n***Step: {step}***")
 
     # add edges
-    nodes_step = []
+    nodes_step = set()
     for edges in (edges0, edges1, profile_edges):
         for edge in edges:
             # take edge only if it belongs to the current assembly step
             if edge2step.get(edge, edge2step.get((edge[1], edge[0]))) != step:
                 continue
+            if edge in edges_span_short or (edge[1], edge[0]) in edges_span_short:
+                if step > max_step_sequential_short:
+                    continue
             for node in edge:
                 # skip node if it already exists
                 if network.has_node(node):
@@ -297,7 +352,7 @@ for step in range(1, 2):
                 # add node at position xyz
                 x, y, z = network0.node_coordinates(node)
                 network.add_node(node, x=x, y=y, z=z)
-                nodes_step.append(node)
+                nodes_step.add(node)
                 # add node load
                 network.node_load(node, load=network0.node_load(node))
                 # add support
@@ -319,10 +374,13 @@ for step in range(1, 2):
     print(network)
 
 # ==========================================================================
-# Form-finding
+# Angle of the assembly step
 # ==========================================================================
 
-    # network_eq = fdm(network)
+    angle_long = l_start + (l_end - l_start) * ((step - 1) / (max_step - 1)) ** l_exp
+    angle_short = s_start + (s_end - s_start) * ((step - 1) / (max_step - 1)) ** s_exp
+    print(f"Angle long span: {degrees(angle_long):.2f}")
+    print(f"Angle short span: {degrees(angle_short):.2f}")
 
 # ==========================================================================
 # Optimization parameters
@@ -342,9 +400,11 @@ for step in range(1, 2):
     goals = []
 
     # maintain horizontal projection
+    points = []
     if add_node_xy_goal:
         for node in nodes_step:  # NOTE: nodes added at this assembly step
-            x, y, z = network0.node_coordinates(node)
+            x, y, z = network_base.node_coordinates(node)
+            points.append(Point(x, y, z))
             for goal, xy in zip((NodeXCoordinateGoal, NodeYCoordinateGoal), (x, y)):
                 goal = goal(node, xy, weight_node_xy_goal)
                 goals.append(goal)
@@ -355,9 +415,16 @@ for step in range(1, 2):
             if node in nodes_step:
                 continue
             xyz = network.node_coordinates(node)
-            goal = NodePointGoal(node, goal, weight_node_bestfit_goal)
+            goal = NodePointGoal(node, xyz, weight_node_bestfit_goal)
             goals.append(goal)
 
+    # node tangent goal
+    if add_node_tangent_goal:
+        for node in nodes_step:
+            if node in supports:
+                continue
+            goal = NodeTangentAngleGoal(node, vector=[0.0, 0.0, 1.0], target=pi * 0.5 - (angle))
+            goals.append(goal)
 
     # edge direction goal
     profile_lines = []
@@ -366,6 +433,16 @@ for step in range(1, 2):
             # take edge only if it belongs to the current assembly step
             if edge2step.get(edge, edge2step.get((edge[1], edge[0]))) != step:
                 continue
+
+            if edge in edges_span_short or (edge[1], edge[0]) in edges_span_short:
+                if step > max_step_sequential_short:
+                    continue
+
+            angle = angle_long
+
+            if edge in profile_edges_span_short:
+                angle = angle_short
+
             u, v = edge
             factor = 1.0
             if not network.has_edge(u, v):
@@ -373,25 +450,19 @@ for step in range(1, 2):
                 factor = -1.0
             edge = (u, v)
 
-            angle = s_start + (s_end - s_start) * ((step - 1) / (max_step - 1)) ** s_exp
-            print(degrees(angle))
-
             vector0 = mesh.edge_vector(u, v)
             ortho = cross_vectors(vector0, [0.0, 0.0, 1.0])
             vector = rotate_points([vector0], angle * factor, axis=ortho, origin=[0.0, 0.0, 0.0])[0]
-            # goal = EdgeDirectionGoal(edge, target=vector, weight=weight_edge_direction_profile_goal)
-            goal = EdgeAngleGoal(edge, [0.0, 0.0, 1.0], pi * 0.5 - (angle * factor))
+            goal = EdgeDirectionGoal(edge, target=vector, weight=weight_edge_direction_profile_goal)
+            # vector_ref = [0.0, 0.0, 1.0]
+            # goal = EdgeAngleGoal(edge, [0.0, 0.0, 1.0], pi * 0.5 - (angle * factor))
             goals.append(goal)
 
             # for viz
-            start = network.node_coordinates(u)
+            start = network_base.node_coordinates(u)
             end = add_vectors(start, scale_vector(normalize_vector(vector), target_edge_length))
             line = Line(start, end)
             profile_lines.append(line)
-
-    # node tangent goal
-
-    # edge target length goal
 
     # equalize length of edges parallel to the spine
     if add_edge0_length_equal_goal:
@@ -400,6 +471,9 @@ for step in range(1, 2):
             # take edge only if it belongs to the current assembly step
             if edge2step.get(edge, edge2step.get((edge[1], edge[0]))) != step:
                 continue
+            if edge in edges_span_short or (edge[1], edge[0]) in edges_span_short:
+                if step > max_step_sequential_short:
+                    continue
             u, v = edge
             if not network.has_edge(u, v):
                 u, v = v, u
@@ -416,6 +490,10 @@ for step in range(1, 2):
                 # take edge only if it belongs to the current assembly step
                 if edge2step.get(edge, edge2step.get((edge[1], edge[0]))) != step:
                     continue
+                if edge in edges_span_short or (edge[1], edge[0]) in edges_span_short:
+                    if step > max_step_sequential_short:
+                        continue
+
                 u, v = edge
                 if not network.has_edge(u, v):
                     u, v = v, u
@@ -424,7 +502,6 @@ for step in range(1, 2):
         goal = EdgesLengthEqualGoal(_edges, weight=weight_edge1_length_equal_goal)
         goals.append(goal)
 
-
 # ==========================================================================
 # Loss function
 # ==========================================================================
@@ -432,7 +509,7 @@ for step in range(1, 2):
     loss = Loss(SquaredError(goals))
 
 # ==========================================================================
-# Loss function
+# Constrained form-finding
 # ==========================================================================
 
     network = constrained_fdm(network,
@@ -446,10 +523,34 @@ for step in range(1, 2):
     # print out network statistics
     network.print_stats()
 
-    # overwrite nodes added during last_step
-    nodes_step_last = nodes_step
+# ==========================================================================
+# Update data
+# ==========================================================================
+
     # store network
     networks[step] = network.copy()
+
+# ==========================================================================
+# Generate mesh
+# ==========================================================================
+
+cycles = network_find_cycles(network)
+vertices = {vkey: network.node_coordinates(vkey) for vkey in network.nodes()}
+mesh = Mesh.from_vertices_and_faces(vertices, cycles)
+mesh.delete_face(0)
+mesh.cull_vertices()
+
+# ==========================================================================
+# Export
+# ==========================================================================
+
+print("hello")
+if export:
+    print("exporting")
+    for name, datastruct in {"network": network, "mesh": mesh}.items():
+        filepath = os.path.join(DATA, f"tripod_{name}_dual_3d.json")
+        datastruct.to_json(filepath)
+    print("\nExported JSON files!")
 
 # ==========================================================================
 # Visualization
@@ -461,14 +562,30 @@ if view:
 
     viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
 
-    # viewer.add(network, as_wireframe=True, show_points=False)
-    viewer.add(network0, as_wireframe=True, show_points=False)
-    viewer.add(network, edgecolor="fd", show_loads=False, show_reactions=False, edgewidth=(0.01, 0.03))
+    viewer.add(network, edgecolor="fd", show_loads=True, show_reactions=True, edgewidth=(0.01, 0.03))
+    viewer.add(mesh, show_points=False, show_lines=False, opacity=0.5)
 
+    # viewer.add(network, as_wireframe=True, show_points=False)
+    viewer.add(network_base, as_wireframe=True, show_points=False)
 
     # profile lines
     for line in profile_lines:
         viewer.add(line, linewidth=5.0, linecolor=Color.red())
+
+    for edge in edges_span_short:
+        viewer.add(Line(*network_base.edge_coordinates(*edge)), color=Color.green(), linewidth=5.0)
+
+    cmap = ColorMap.from_mpl("magma")
+    for strip in profile_strips:
+        for i, edge in enumerate(strip):
+            viewer.add(Line(*network_base.edge_coordinates(*edge)), color=cmap(i, maxval=len(strip)), linewidth=5.0)
+
+    # for polyedges in profile_polyedges_from_strips:
+    #     for polyedge in polyedges:
+    #         for i, edge in enumerate(pairwise(polyedge)):
+    #             viewer.add(Line(*network_base.edge_coordinates(*edge)), color=cmap(i, maxval=len(polyedge)), linewidth=5.0)
+
+
 
     # for vkey in mesh.vertices():
     #     xyz = network.node_coordinates(vkey)
@@ -532,5 +649,52 @@ if view:
     #     x = edge2step[tuple(sorted(edge))] / max_step
     #     linecolor = (0.8 * x, 1.0, 0.8 * x)
     #     viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor, linewidth=2.)
+
+    # node tangent arrows
+    if view_node_tangents:
+        angles_mesh = []
+        tangent_angles_mesh = []
+        arrows = []
+        tangent_arrows = []
+        vkeys = []
+
+        # for vkey in mesh.vertices():
+        for vkey in nodes_step:
+            vkeys.append(vkey)
+
+            xyz = mesh.vertex_coordinates(vkey)
+
+            if vkey in supports or vkey in spine_nodes:
+                continue
+
+            normal = scale_vector(normalize_vector(mesh.vertex_normal(vkey)), 0.25)
+            z_vector = [0., 0., 1.]
+
+            angle = angle_vectors(z_vector, normal, deg=True)
+
+            ppoint = project_point_plane(add_vectors(xyz, z_vector), (xyz, normal))
+            tangent_vector = normalize_vector(subtract_vectors(ppoint, xyz))
+            tangent_arrow = Arrow(xyz, scale_vector(tangent_vector, 0.25))
+
+            tangent_arrows.append(tangent_arrow)
+
+            angles_mesh.append(angle)
+            tangent_angles_mesh.append(angle_vectors(z_vector, tangent_vector, deg=True))
+
+            arrow = Arrow(xyz, normal)
+            arrows.append(arrow)
+
+        cmap = ColorMap.from_mpl("plasma")
+        min_angle = min(tangent_angles_mesh)
+        max_angle = max(tangent_angles_mesh)
+        print(f"\nTangent angle\tMin: {min_angle:.2f}\tMax: {max_angle:.2f}\tMean: {sum(tangent_angles_mesh)/len(tangent_angles_mesh):.2f}\n")
+
+        for vkey, angle, tangent_angle, arrow, tarrow in zip(vkeys, angles_mesh, tangent_angles_mesh, arrows, tangent_arrows):
+            # color = cmap(tangent_angle, minval=min_angle, maxval=max_angle)
+            color = cmap(tangent_angle, minval=min_angle, maxval=max_angle)
+            # viewer.add(arrow, show_edges=False, opacity=0.5)
+            viewer.add(tarrow, facecolor=color, show_edges=False, opacity=0.8)
+            # print(f"node: {vkey}\tangle: {angle:.2f}\ttangent angle: {tangent_angle:.2f}\ttangent angle 2: {90-angle:.2f}")
+
 
     viewer.show()
