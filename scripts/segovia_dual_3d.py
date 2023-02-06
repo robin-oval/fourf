@@ -9,7 +9,7 @@ from numpy import mean, std
 
 from operator import itemgetter
 
-from compas.datastructures import network_find_cycles, Mesh
+from compas.datastructures import network_find_cycles, Mesh, Network
 
 from compas.colors import Color, ColorMap
 from compas.geometry import Line, Polyline, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
@@ -36,7 +36,7 @@ from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
 from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder
-from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
+from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter, NodeAnchorZParameter
 from jax_fdm.parameters import NodeLoadXParameter, NodeLoadYParameter, NodeLoadZParameter
 
 from jax_fdm.goals import NodePointGoal
@@ -51,6 +51,7 @@ from jax_fdm.goals import NodePlaneGoal
 from jax_fdm.goals import NetworkLoadPathGoal
 from jax_fdm.goals import EdgesLengthEqualGoal
 from jax_fdm.goals import EdgeAngleGoal
+from jax_fdm.goals import NodeResidualForceGoal
 
 from jax_fdm.constraints import EdgeLengthConstraint, EdgeForceConstraint, NodeZCoordinateConstraint
 from jax_fdm.losses import SquaredError, Loss, PredictionError
@@ -75,6 +76,10 @@ target_edge_length = 0.25  # 0.25 [m]
 
 dead_load = 1.0  # additional dead load [kN/m2]
 pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
+print(f"Area load: {pz} [kN/m2]")
+
+freeze_spine = True  # add supports to the nodes of the spine
+update_loads = False  # recompute node loads at every assembly step based on vertex area of form-found mesh
 
 opt = LBFGSB  # optimization solver
 qmin, qmax = -20.0, -1e-1  # bounds on force densities [kN/m]
@@ -111,15 +116,19 @@ weight_edge0_length_equal_goal = 1.0
 add_edge1_length_equal_goal = True
 weight_edge1_length_equal_goal = 1.0  # 0.1
 
+# reduce reaction forces at the spine
+add_node_spine_reaction_goal = False
+weight_node_spine_reaction_goal = 0.01  # 0.1
+
 # controls
-export = True
+export = False
 results = False
 view = True
 view_node_tangents = False
 
 # sequential form finding
-max_step_sequential = 5
-max_step_sequential_short = 3
+max_step_sequential = 5  # 5
+max_step_sequential_short = 3  # 3
 
 # ==========================================================================
 # Import datastructures
@@ -196,12 +205,14 @@ for polyedge in spine_polyedges:
 
 # spine strips
 spine_strip_edges = []
+spine_strip_edges_edges = set()
 for fkey in mesh.faces():
     if mesh.face_degree(fkey) == 6:
         for u, v in mesh.face_halfedges(fkey):
             strip_edges = mesh.collect_strip(v, u, both_sides=False)
             if strip_edges[-1][-1] in supported_vkeys:
                 spine_strip_edges.append(strip_edges)
+                spine_strip_edges_edges.update(strip_edges)
 
 # ==========================================================================
 # Profile
@@ -321,19 +332,34 @@ network = network_spine.copy()
 # Freeze spine nodes in the air
 # ==========================================================================
 
-for node in spine_nodes:
-    network.node_support(node)
+if freeze_spine:
+    print("\nFreezing spine in the air!")
+    for node in spine_nodes:
+        network.node_support(node)
 
 # ==========================================================================
 # Sequential constrained form-finding
 # ==========================================================================
 
 print(network)
-networks = {0: network.copy()}
+networks = {}
 
 for step in range(1, max_step_sequential + 1):
 
     print(f"\n***Step: {step}***")
+
+    # TODO: update loads
+    if update_loads:
+        cycles = network_find_cycles(network)
+        vertices = {vkey: network.node_coordinates(vkey) for vkey in network.nodes()}
+        _mesh = Mesh.from_vertices_and_faces(vertices, cycles)
+        _mesh.delete_face(0)
+        _mesh.cull_vertices()
+
+        print("Updating loads on network from recomputed mesh")
+        for node in network.nodes():
+            vertex_area = _mesh.vertex_area(node)
+            network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
 
     # add edges
     nodes_step = set()
@@ -391,6 +417,14 @@ for step in range(1, max_step_sequential + 1):
     for edge in network.edges():
         parameter = EdgeForceDensityParameter(edge, qmin, qmax)
         parameters.append(parameter)
+
+    # ztol = 0.05
+    # for node in spine_nodes:
+    #     if node in supported_vkeys:
+    #         continue
+    #     x, y, z = network.node_coordinates(node)
+    #     parameter = NodeAnchorZParameter(node, z - ztol, z + ztol)
+    #     parameters.append(parameter)
 
 # ==========================================================================
 # Goals
@@ -502,6 +536,14 @@ for step in range(1, max_step_sequential + 1):
         goal = EdgesLengthEqualGoal(_edges, weight=weight_edge1_length_equal_goal)
         goals.append(goal)
 
+    # reduce reaction forces at spine nodes
+    if freeze_spine and add_node_spine_reaction_goal:
+        for node in spine_nodes:
+            if node in supported_vkeys:
+                continue
+            goal = NodeResidualForceGoal(node, 0.0, weight_node_spine_reaction_goal)
+            goals.append(goal)
+
 # ==========================================================================
 # Loss function
 # ==========================================================================
@@ -524,11 +566,33 @@ for step in range(1, max_step_sequential + 1):
     network.print_stats()
 
 # ==========================================================================
-# Update data
+# Store data
 # ==========================================================================
 
     # store network
     networks[step] = network.copy()
+
+# ==========================================================================
+# Export assembly step
+# ==========================================================================
+
+    print("\nExporting assembly step networks...")
+    print("Deleting supported edges...")
+
+    _network = network.copy()
+    deletable = []
+    for edge in _network.edges():
+        u, v = edge
+        if _network.is_node_support(u) and _network.is_node_support(v):
+            deletable.append(edge)
+    for u, v in deletable:
+        _network.delete_edge(u, v)
+
+    _network = fdm(_network)
+
+    filepath = os.path.join(DATA, f"tripod_network_dual_3d_step_{step}.json")
+    _network.to_json(filepath)
+    print("\nExported assembly JSON file")
 
 # ==========================================================================
 # Generate mesh
@@ -544,12 +608,12 @@ mesh.cull_vertices()
 # Export
 # ==========================================================================
 
-print("hello")
 if export:
-    print("exporting")
     for name, datastruct in {"network": network, "mesh": mesh}.items():
+
         filepath = os.path.join(DATA, f"tripod_{name}_dual_3d.json")
         datastruct.to_json(filepath)
+
     print("\nExported JSON files!")
 
 # ==========================================================================
@@ -562,30 +626,32 @@ if view:
 
     viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
 
-    viewer.add(network, edgecolor="fd", show_loads=True, show_reactions=True, edgewidth=(0.01, 0.03))
+    viewer.add(network, edgecolor="force", show_loads=True, show_reactions=True, edgewidth=(0.01, 0.03))
     viewer.add(mesh, show_points=False, show_lines=False, opacity=0.5)
 
     # viewer.add(network, as_wireframe=True, show_points=False)
+
+    network_base = network.copy()
+    for node in network_base.nodes():
+        network_base.node_attribute(node, "z", 0.0)
     viewer.add(network_base, as_wireframe=True, show_points=False)
 
-    # profile lines
-    for line in profile_lines:
-        viewer.add(line, linewidth=5.0, linecolor=Color.red())
+    # # profile lines
+    # for line in profile_lines:
+    #     viewer.add(line, linewidth=5.0, linecolor=Color.red())
 
-    for edge in edges_span_short:
-        viewer.add(Line(*network_base.edge_coordinates(*edge)), color=Color.green(), linewidth=5.0)
+    # for edge in edges_span_short:
+    #     viewer.add(Line(*network_base.edge_coordinates(*edge)), color=Color.green(), linewidth=5.0)
 
-    cmap = ColorMap.from_mpl("magma")
-    for strip in profile_strips:
-        for i, edge in enumerate(strip):
-            viewer.add(Line(*network_base.edge_coordinates(*edge)), color=cmap(i, maxval=len(strip)), linewidth=5.0)
+    # cmap = ColorMap.from_mpl("magma")
+    # for strip in profile_strips:
+    #     for i, edge in enumerate(strip):
+    #         viewer.add(Line(*network_base.edge_coordinates(*edge)), color=cmap(i, maxval=len(strip)), linewidth=5.0)
 
     # for polyedges in profile_polyedges_from_strips:
     #     for polyedge in polyedges:
     #         for i, edge in enumerate(pairwise(polyedge)):
     #             viewer.add(Line(*network_base.edge_coordinates(*edge)), color=cmap(i, maxval=len(polyedge)), linewidth=5.0)
-
-
 
     # for vkey in mesh.vertices():
     #     xyz = network.node_coordinates(vkey)

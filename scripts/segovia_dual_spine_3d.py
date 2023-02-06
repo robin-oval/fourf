@@ -9,6 +9,8 @@ from numpy import mean, std
 
 from operator import itemgetter
 
+from compas.datastructures import network_find_cycles, Mesh, Network
+
 from compas.colors import Color, ColorMap
 from compas.geometry import Line, Polyline, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
 from compas.geometry import add_vectors, scale_vector, normalize_vector
@@ -85,17 +87,9 @@ weight_node_spine_xyz_goal = 50.0
 add_spine_planarity_goal = False
 weight_spine_planarity_goal = 10.0
 
-# # keep profile planar
-# add_profile_planarity_goal = False  # True
-# weight_profile_planarity_goal = 10.0
-
 # edge length goal to obtain constant brick course widths
 add_edge_length_profile_goal = False
 weight_edge_length_profile_goal = 1.0
-
-# equal edge length at the spine
-# add_edge_length_equal_spine_goal = False  # False
-# weight_edge_length_equal_spine_goal = 1.0
 
 # edge length goal to obtain constant brick course widths
 add_edge_length_strips_goal = False
@@ -367,18 +361,43 @@ network_spine.print_stats()
 print(f"\n***Spine max height: {max(network_spine.nodes_attribute(name='z')):.2f}***\n")
 
 # ==========================================================================
+# Generate mesh
+# ==========================================================================
+
+cycles = network_find_cycles(network_spine)
+vertices = {vkey: network_spine.node_coordinates(vkey) for vkey in network_spine.nodes()}
+mesh = Mesh.from_vertices_and_faces(vertices, cycles)
+mesh.delete_face(0)
+
+# ==========================================================================
 # Export
 # ==========================================================================
 
 if export:
-    print("Setting load y component back to 0.0!")
+
+    print("Setting load y component back to 0.0 for export...")
     ns = network_spine.copy()
     for node in network_spine.nodes():
         ns.node_attribute(node, "py", 0.0)
+    for name, datastruct in {"network": ns, "mesh": mesh}.items():
 
-    filepath = os.path.join(DATA, "tripod_network_dual_spine_3d.json")
-    ns.to_json(filepath)
-    print("Exported JSON file!")
+        filepath = os.path.join(DATA, f"tripod_{name}_dual_spine_3d.json")
+        datastruct.to_json(filepath)
+
+    # add edges
+    spine_center = Network()
+    for strip in spine_strip_edges:
+        nodes = []
+        for u, v in strip:
+            x, y, z = network_spine.edge_midpoint(u, v)
+            node = spine_center.add_node(x=x, y=y, z=z)
+            nodes.append(node)
+        for u, v in pairwise(nodes):
+            spine_center.add_edge(u, v)
+
+    filepath = os.path.join(DATA, f"tripod_network_dual_spine_center_3d.json")
+    spine_center.to_json(filepath)
+    print("\nExported JSON files!")
 
 # ==========================================================================
 # Visualization
@@ -386,34 +405,10 @@ if export:
 
 if view:
 
-    network = network_eq
-
     viewer = Viewer(width=1600, height=900, show_grid=False)
-
     viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
 
     viewer.add(network_spine0, as_wireframe=True, show_points=False)
     viewer.add(network_spine, edgecolor="force", edgewidth=(0.01, 0.03))
-
-    for strip in spine_strip_edges:
-        for edge in strip:
-            viewer.add(Line(*network_spine.edge_coordinates(*edge)), linecolor=(1.0, 0.0, 1.0), linewidth=2.)
-
-    # # polyedges
-    # for polyedge in profile_polyedges:
-    #     for edge in pairwise(polyedge):
-    #         x = edge2step[tuple(sorted(edge))] / max_step
-    #         viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.0, 0.2 + 0.8 * x, 0.2 + 0.8 * x), linewidth=2.0)
-
-    # # edges 0
-    # for edge in edges0:
-    #     x = edge2step[tuple(sorted(edge))] / max_step
-    #     viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=(0.5 * x, 0.5 * x, 0.5 * x), linewidth=2.)
-
-    # # edges 1
-    # for edge in edges1:
-    #     x = edge2step[tuple(sorted(edge))] / max_step
-    #     linecolor = (0.8 * x, 1.0, 0.8 * x)
-    #     viewer.add(Line(*mesh.edge_coordinates(*edge)), linecolor=linecolor, linewidth=2.)
 
     viewer.show()
