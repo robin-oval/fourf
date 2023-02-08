@@ -8,21 +8,14 @@ from compas.colors import Color, ColorMap
 from compas.geometry import Line, Polyline, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
 from compas.geometry import add_vectors, scale_vector, normalize_vector, angle_vectors, project_point_plane, normalize_vector, subtract_vectors
 from compas.geometry import dot_vectors, Point
+from compas.utilities import pairwise
 
-from compas_view2.shapes import Arrow
-
-from compas_quad.datastructures import CoarseQuadMesh
 from compas_quad.datastructures import QuadMesh
 from compas_quad.coloring import quad_mesh_polyedge_2_coloring
 
 from fourf import DATA
-
-from fourf.topology import threefold_vault
-from fourf.topology import quadmesh_densification
-from fourf.support import support_shortest_boundary_polyedges
 from fourf.support import polyedge_types
 from fourf.sequence import quadmesh_polyedge_assembly_sequence
-from fourf.utilities import mesh_to_fdnetwork
 
 from jax_fdm.datastructures import FDNetwork
 
@@ -38,22 +31,19 @@ from jax_fdm.goals import NodeTangentAngleGoal
 from jax_fdm.goals import NodeXCoordinateGoal
 from jax_fdm.goals import NodeYCoordinateGoal
 from jax_fdm.goals import NodeResidualForceGoal
-from jax_fdm.goals import NodeZCoordinateGoal
 from jax_fdm.goals import NodePlaneGoal
-from jax_fdm.goals import NetworkLoadPathGoal
 from jax_fdm.goals import EdgesLengthEqualGoal
-from jax_fdm.goals import EdgeAngleGoal
-from jax_fdm.goals import NodeResidualForceGoal
 
 from jax_fdm.losses import SquaredError, Loss, PredictionError, AbsoluteError, MeanSquaredError, MeanAbsoluteError
+from jax_fdm.losses import L2Regularizer
 
 from jax_fdm.visualization import Viewer
 
-from compas.utilities import pairwise
 
 # ==========================================================================
 # Parameters
 # ==========================================================================
+
 
 # brick hollow properties
 brick_hollow_thickness = 0.025  # [m]
@@ -83,25 +73,25 @@ export = True
 view = True
 
 # spine parameters
-freeze_spine = True  # add supports to the nodes of the spine
+fix_hexagon = True  # add supports to the hexagonal face
+add_bracing = False  # add internal bracing to the spine, NOTE: add already in spine form finding instead?
 update_loads = True  # recompute node loads at every assembly step based on vertex area of form-found mesh
 fofin_last = False  # form-finding last generated network with updated loads
 bestfit_last = False  # approximate shape with updated node loads
 
 # sequential form finding
-max_step_sequential = 1  # 5
-max_step_sequential_short = 1  # 3
+max_step_sequential = 3  # 5
+max_step_sequential_short = 3  # 3
 
-# angle bounds
+# angle bounds fs
 l_start, l_end, l_exp = radians(45), radians(15), 1.0  # long spans, angle bounds and variation exponent [-]
 s_start, s_end, s_exp = radians(30), radians(15), 1.0  # short spans, angle bounds and variation exponent [-]
 
 # constrained form-finding
 opt = LBFGSB  # optimization solver
-qmin, qmax = -10.0, -1e-1  # bounds on force densities [kN/m]
+qmin, qmax = -20.0, -1e-1  # bounds on force densities [kN/m]
 maxiter = 10000  # maximum number of iterations
 tol = 1e-9  # 1e-9  optimization tolerance
-parametrize_z_spine = True  # add z coordinate of spine supports as optimization parameters
 ztol = 0.1
 
 # best-fit past nodes
@@ -110,11 +100,16 @@ weight_node_bestfit_goal = 5.0
 
 # keep horizontal projection fixed
 add_node_xy_goal = True
-weight_node_xy_goal = 2.0
+weight_node_xy_goal = 3.0
 
 # profile edges direction goal
 add_edge_direction_profile_goal = True
 weight_edge_direction_profile_goal = 5.0
+
+# edge target length goal
+add_edge_length_profile_goal = False
+weight_edge_length_profile_goal = 0.1
+edge_length_factor = 0.8
 
 # equalize length of edges perpendicular to the spine
 add_edge1_length_equal_goal = True
@@ -124,10 +119,13 @@ weight_edge1_length_equal_goal = 1.0
 add_edge0_length_equal_goal = False
 weight_edge0_length_equal_goal = 1.0
 
-# edge target length goal
-add_edge_length_profile_goal = False
-weight_edge_length_profile_goal = 1.0
-edge_length_factor = 1.0
+# spine nodes planar goal
+add_node_spine_planar_goal = True
+weight_node_spine_planar_goal = 20.0
+
+# spine nodes no torsion goal
+add_node_spine_notorsion_goal = True
+weight_node_spine_notorsion_goal = 5.0
 
 # reduce reaction forces at the spine
 add_node_spine_reaction_goal = True
@@ -328,6 +326,15 @@ for node in network.nodes():
     vertex_area = mesh.vertex_area(node)
     network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
 
+# spine edges constraint planes
+spine_planes = {}
+for polyedge in spine_polyedges:
+    for u, v in pairwise(polyedge + polyedge[:1]):
+        origin = network.node_coordinates(u)
+        vector = mesh.edge_vector(u, v)
+        normal = cross_vectors(mesh.edge_vector(u, v), [0.0, 0.0, 1.0])
+        spine_planes[u] = (origin, normal)
+
 # make copies
 network_base = network.copy()
 network0 = network.copy()
@@ -348,15 +355,21 @@ network = network_spine.copy()
 # almost zero-out force densities in spine edges
 for edge in network.edges():
     if edge in spine_strip_edges_edges or (edge[1], edge[0]) in spine_strip_edges_edges:
-        network.edge_forcedensity(edge, -1e-3)
+        network.edge_forcedensity(edge, -1e-1)
 
-# ==========================================================================
-# Freeze spine nodes in the air
-# ==========================================================================
+# add bracing in the spine
+bracing_edges = []
+if add_bracing:
+    i = 0
+    u, v = hexagon[i], hexagon[i+3]
+    network.add_edge(u, v)
+    network.edge_forcedensity((u, v), -1e-1)
+    bracing_edges.append((u, v))
+    print(f"Added {len(bracing_edges)} bracing edges")
 
-if freeze_spine:
-    print("\nFreezing spine in the air!")
-    for node in spine_nodes:
+if fix_hexagon:
+    print("\nFixing hexagon nodes")
+    for node in hexagon:
         network.node_support(node)
 
 # ==========================================================================
@@ -439,15 +452,15 @@ for step in range(1, max_step_sequential + 1):
     parameters = []
 
     for edge in network.edges():
-        parameter = EdgeForceDensityParameter(edge, qmin, qmax)
+        qmax_ = qmax
+        if step > max_step_sequential_short:
+            qmax_ = qmax * 1.0
+        parameter = EdgeForceDensityParameter(edge, qmin, qmax_)
         parameters.append(parameter)
 
-    if parametrize_z_spine and freeze_spine:
-        print("Adding z coordinate of spine supports as optimization parameters...")
-        for node in spine_nodes:
-            if node in supported_vkeys:
-                continue
-            z = network.node_attribute(node, "z")
+    if fix_hexagon:
+        for node in hexagon:
+            x, y, z = network.node_coordinates(node)
             parameter = NodeAnchorZParameter(node, z - ztol, z + ztol)
             parameters.append(parameter)
 
@@ -479,19 +492,48 @@ for step in range(1, max_step_sequential + 1):
             if node in nodes_step:
                 continue
             xyz = network.node_coordinates(node)
-            goal = NodePointGoal(node, xyz, weight_node_bestfit_goal)
+            weight = weight_node_bestfit_goal
+            if node in spine_nodes:
+                weight = weight_node_bestfit_goal / 2.
+            goal = NodePointGoal(node, xyz, weight)
             goals_bestfit.append(goal)
         print(f"{len(goals_bestfit)} NodeBestfitGoal")
 
         goals.extend(goals_bestfit)
 
-    # edge direction goal
+    # profile edges length goal
+    if add_edge_length_profile_goal:
+        goals_edge_length = []
+        for edges in (edges1, profile_edges):
+            for edge in edges:
+                # take edge only if it belongs to the current assembly step
+                edge_step = edge2step.get(edge, edge2step.get((edge[1], edge[0])))
+                if edge_step != step:
+                    continue
+
+                if edge in edges_span_short or (edge[1], edge[0]) in edges_span_short:
+                    if edge_step > max_step_sequential_short:
+                        continue
+
+                u, v = edge
+                if not network.has_edge(u, v):
+                    u, v = v, u
+                edge = (u, v)
+
+                length = mesh.edge_length(u, v) * edge_length_factor
+
+                goal = EdgeLengthGoal(edge, length, weight_edge_length_profile_goal)
+                goals_edge_length.append(goal)
+
+        print(f"{len(goals_edge_length)} EdgeLengthGoal")
+        goals.extend(goals_edge_length)
+
+    # profile edge direction goal
     profile_lines = []
     goals_edge_direction = []
     if add_edge_direction_profile_goal:
         for edge in profile_edges:
             # take edge only if it belongs to the current assembly step
-            # if edge2step.get(edge, edge2step.get((edge[1], edge[0]))) != step:
             edge_step = edge2step.get(edge, edge2step.get((edge[1], edge[0])))
             if edge_step > step or edge_step == 0:
                 continue
@@ -586,12 +628,35 @@ for step in range(1, max_step_sequential + 1):
         print(f"{len(goals_edge1_length_equal)} Edges1EqualLengthGoal")
         goals.extend(goals_edge1_length_equal)
 
+    # spine nodes planar goal
+    if add_node_spine_planar_goal:
+        goals_nodes_spine_planar = []
+        for node, plane in spine_planes.items():
+            goal = NodePlaneGoal(node, plane, weight_node_spine_planar_goal)
+            goals_nodes_spine_planar.append(goal)
+
+        print(f"{len(goals_nodes_spine_planar)} NodesSpinePlanarGoal")
+        goals.extend(goals_nodes_spine_planar)
+
+    # spine nodes no torsion goal
+    if add_node_spine_notorsion_goal:
+        goals_nodes_spine_notorsion = []
+        for strip in spine_strip_edges:
+            for u, v in strip:
+                if not network.has_edge(u, v):
+                    u, v = v, u
+                edge = (u, v)
+                vector = network_spine.edge_vector(u, v)
+                goal = EdgeDirectionGoal(edge, vector, weight_node_spine_notorsion_goal)
+                goals_nodes_spine_notorsion.append(goal)
+
+        print(f"{len(goals_nodes_spine_notorsion)} NodesSpineNoTorsionGoal")
+        goals.extend(goals_nodes_spine_notorsion)
+
     # reduce reaction forces at spine nodes
-    if freeze_spine and add_node_spine_reaction_goal:
+    if fix_hexagon and add_node_spine_reaction_goal:
         goals_spine_reactions = []
-        for node in spine_nodes:
-            if node in supported_vkeys:
-                continue
+        for node in hexagon:
             goal = NodeResidualForceGoal(node, 0.0, weight_node_spine_reaction_goal)
             goals_spine_reactions.append(goal)
 
@@ -751,7 +816,7 @@ if view:
 
     viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
 
-    viewer.add(network, edgecolor="force", show_loads=True, show_reactions=True, edgewidth=(0.01, 0.03))
+    viewer.add(network, edgecolor="force", show_loads=False, show_reactions=True, edgewidth=(0.01, 0.03))
     viewer.add(mesh, show_points=False, show_lines=False, opacity=0.5)
 
     viewer.add(network_spine, as_wireframe=True, show_points=False)
