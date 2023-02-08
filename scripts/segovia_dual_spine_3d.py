@@ -60,55 +60,48 @@ from compas.datastructures import mesh_weld
 # Parameters
 # ==========================================================================
 
+# point load
+uniform_load = False
+point_load = 0.1
 
-brick_length = 0.225   # [m]
-brick_width = 0.1   # [m]
-brick_thickness = 0.025  # [m]
-brick_layers = 3  # [-]
-brick_density = 16.5  # [kN/m3]
-comp_strength = 5.0  # [MPa]
+# brick hollow properties
+brick_hollow_thickness = 0.025  # [m]
+brick_hollow_layers = 2  # [-]
+brick_hollow_density = 11.0  # [kN/m3]
 
+# brick solid properties
+brick_solid_thickness = 0.04  # [m]
+brick_solid_layers = 1  # [-]
+brick_solid_density = 18.0  # [kN/m3]
+
+# white mortar properties
+mortar_thickness = 0.012  # [m]
+mortar_layers = 2
+mortar_density = 20.0  # [kN/m3]
+
+# vertical area load (approximated self-weight) [kN/m2]
+brick_hollow_pz = brick_hollow_density * brick_hollow_thickness * brick_hollow_layers
+brick_solid_pz = brick_solid_density * brick_solid_thickness * brick_solid_layers
+mortar_pz = mortar_density * mortar_thickness * mortar_layers
+pz = brick_hollow_pz + brick_solid_pz + mortar_pz
+
+print(f"Area load: {pz:.2f} [kN/m2] (Brick hollow:  {brick_hollow_pz:.2f} [kN/m2]\tBrick solid:  {brick_solid_pz:.2f} [kN/m2]\tMortar {mortar_pz:.2f} [kN/m2])")
+
+# spine description
 spine_height = 2.3  # [m]
-target_edge_length = 0.25  # 0.25 [m]
 
-dead_load = 1.0  # additional dead load [kN/m2]
-pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
-
-opt = LBFGSB  # optimization solver
-qmin, qmax = None, -1e-1  # bounds on force densities [kN/m]
+# optimization
+opt = SLSQP  # optimization solver
+qmin, qmax = -10.0, 0.0  # bounds on force densities [kN/m]
 maxiter = 5000  # maximum number of iterations
 tol = 1e-6  # optimization tolerance
-
-# aim for target positions
-add_node_spine_xyz_goal = True
-weight_node_spine_xyz_goal = 50.0
-
-# # keep spine planar
-add_spine_planarity_goal = False
-weight_spine_planarity_goal = 10.0
-
-# edge length goal to obtain constant brick course widths
-add_edge_length_profile_goal = False
-weight_edge_length_profile_goal = 1.0
-
-# edge length goal to obtain constant brick course widths
-add_edge_length_strips_goal = False
-weight_edge_length_strips_goal = 0.1  # 0.1
-
-# edge equalize length goal to obtain constant brick course widths
-add_edge_length_equal_strips_goal = True  # True
-weight_edge_length_equal_strips_goal = 0.0
-
-# edge equalize length goals to polyedges parallel to spine
-add_edge_length_equal_polyedges_goal = True  # True
-weight_edge_length_equal_polyedges_goal = 0.0  # 0.1
 
 # controls
 view = True
 export = True
 
 # ==========================================================================
-# Import dual mesh
+# Import datastructures
 # ==========================================================================
 
 network = FDNetwork.from_json(os.path.join(DATA, "tripod_network_dual_2d.json"))
@@ -259,7 +252,10 @@ edges1 = [edge for pkey in mesh.polyedges() for edge in mesh.polyedge_edges(pkey
 
 for node in network.nodes():
     vertex_area = mesh.vertex_area(node)
-    network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
+    load = vertex_area * pz * -1.0
+    if uniform_load:
+        load = point_load * -1.0
+    network.node_load(node, load=[0.0, 0.0, load])
 
 network0 = network.copy()
 
@@ -350,7 +346,7 @@ loss = Loss(SquaredError(goals))
 
 network_spine0 = network_spine.copy()
 network_spine = constrained_fdm(network_spine,
-                                optimizer=SLSQP(),
+                                optimizer=opt(),
                                 loss=loss,
                                 parameters=parameters,
                                 maxiter=maxiter,

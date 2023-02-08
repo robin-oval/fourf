@@ -9,6 +9,7 @@ from itertools import combinations
 from compas.colors import Color
 from compas.geometry import Line
 from compas.colors import Color, ColorMap
+from compas.datastructures import Mesh
 from compas.geometry import Line, Polyline, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
 from compas.geometry import angle_vectors, project_point_plane
 from compas.geometry import add_vectors, subtract_vectors, scale_vector, normalize_vector
@@ -26,62 +27,70 @@ from jax_fdm.equilibrium import constrained_fdm
 from jax_fdm.optimization import SLSQP, LBFGSB
 from jax_fdm.optimization import OptimizationRecorder
 
-from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
+from jax_fdm.parameters import EdgeForceDensityParameter
+from jax_fdm.parameters import NodeAnchorZParameter
 
-from jax_fdm.goals import EdgeLengthGoal, NodePlaneGoal, EdgeDirectionGoal, EdgesLengthEqualGoal
-from jax_fdm.goals import NodePointGoal, NodeYCoordinateGoal, NodeZCoordinateGoal, NodeXCoordinateGoal, NetworkLoadPathGoal
+from jax_fdm.goals import NodeResidualForceGoal
+from jax_fdm.goals import NodePointGoal
 
 from jax_fdm.losses import RootMeanSquaredError, SquaredError, MeanSquaredError, MeanAbsoluteError, AbsoluteError, PredictionError
 from jax_fdm.losses import Loss
 
-from jax_fdm.visualization import LossPlotter
 from jax_fdm.visualization import Viewer
 
+# fourf
 from fourf import DATA
-from fourf.utilities import mesh_to_fdnetwork
-from fourf.topology import threefold_vault
-from fourf.topology import quadmesh_densification
-from fourf.support import support_shortest_boundary_polyedges
-from fourf.support import polyedge_types
-from fourf.sequence import quadmesh_polyedge_assembly_sequence
 
 # ==========================================================================
 # Parameters
 # ==========================================================================
 
+# controls
+export = False
+view = True
 
-brick_length, brick_width, brick_thickness = 0.225, 0.1, 0.03  # [m]
-brick_layers = 3  # [-]
-brick_density = 16.5  # [kN/m3]
+# brick hollow properties
+brick_hollow_thickness = 0.025  # [m]
+brick_hollow_layers = 2  # [-]
+brick_hollow_density = 11.0  # [kN/m3]
 
-dead_load = 0.0  # additional dead load [kN/m2]
-pz = brick_density * brick_thickness * brick_layers + dead_load  # vertical area load (approximated self-weight + uniform dead load) [kN/m2]
-print("pz", pz)
-error = MeanSquaredError
+# brick solid properties
+brick_solid_thickness = 0.04  # [m]
+brick_solid_layers = 1  # [-]
+brick_solid_density = 18.0  # [kN/m3]
 
+# white mortar properties
+mortar_thickness = 0.012  # [m]
+mortar_layers = 2
+mortar_density = 20.0  # [kN/m3]
+
+# vertical area load (approximated self-weight) [kN/m2]
+brick_hollow_pz = brick_hollow_density * brick_hollow_thickness * brick_hollow_layers
+brick_solid_pz = brick_solid_density * brick_solid_thickness * brick_solid_layers
+mortar_pz = mortar_density * mortar_thickness * mortar_layers
+pz = brick_hollow_pz + brick_solid_pz + mortar_pz
+
+print(f"Area load: {pz:.2f} [kN/m2] (Brick hollow:  {brick_hollow_pz:.2f} [kN/m2]\tBrick solid:  {brick_solid_pz:.2f} [kN/m2]\tMortar {mortar_pz:.2f} [kN/m2])")
+
+ztol = 0.2
+
+# optimization
 qmin, qmax = -20.0, -0.0  # min and max force densities
-optimizer = LBFGSB  # SLSQP  # the optimization algorithm
-maxiter = 1000  # optimizer maximum iterations
+optimizer = LBFGSB   # the optimization algorithm
+error = SquaredError
+maxiter = 10000  # optimizer maximum iterations
 tol = 1e-6  # optimizer tolerance
 
-# point constraint weights
-w_start = 10.0  # 10
-w_end = 1.0  # 1
-w_factor_boundary = 1.0  # 0.25
-
+# point goal weights
 w_xy = 1.0
-w_z = 5.0
-
-export = True  # export result to JSON
+w_z = 1.0
 
 # ==========================================================================
 # Import target mesh
 # ==========================================================================
 
 FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_mesh_dual_3d.json"))
-mesh = QuadMesh.from_json(FILE_IN)
-mesh.collect_strips()
-mesh.collect_polyedges()
+mesh = Mesh.from_json(FILE_IN)
 
 FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_3d.json"))
 network = FDNetwork.from_json(FILE_IN)
@@ -95,6 +104,21 @@ for node in network.nodes():
     network.node_load(node, load=[0.0, 0.0, vertex_area * pz * -1.0])
 
 # ==========================================================================
+# Add bracing edges
+# ==========================================================================
+
+bracing_edges = []
+for fkey in mesh.faces():
+    vertices = mesh.face_vertices(fkey)
+    if len(vertices) != 4:
+        continue
+    a, b, c, d = vertices
+    edge = network.add_edge(a, c)
+    network.edge_forcedensity(edge, -0.1)
+    edge = network.add_edge(b, d)
+    network.edge_forcedensity(edge, -0.1)
+
+# ==========================================================================
 # Define optimization parameters
 # ==========================================================================
 
@@ -103,30 +127,27 @@ for edge in network.edges():
     parameter = EdgeForceDensityParameter(edge, qmin, qmax)
     parameters.append(parameter)
 
+spine_nodes = []
+# for node in network.nodes_supports():
+#     x, y, z = network.node_coordinates(node)
+#     if z < 0.1:
+#         continue
+#     spine_nodes.append(node)
+#     parameter = NodeAnchorZParameter(node, z - ztol, z + ztol)
+#     parameters.append(parameter)
+
 # ==========================================================================
 # Define goals
 # ==========================================================================
 
 # edge lengths
 goals = []
-
-# NOTE: non-spine nodes best fit XYZ
 for node in network.nodes_free():
-    x, y, z = network.node_coordinates(node)
-    goals.append(NodeXCoordinateGoal(node, target=x, weight=w_xy))
-    goals.append(NodeYCoordinateGoal(node, target=y, weight=w_xy))
-    goals.append(NodeZCoordinateGoal(node, target=z, weight=w_z))
+    point = network.node_coordinates(node)
+    goals.append(NodePointGoal(node, target=point))
 
-
-# for polyedge in span_polyedges_split + spine_polyedges:
-#     n = len(polyedge)
-#     for i, node in enumerate(polyedge):
-
-#         weight = w_start + (w_end - w_start) * (i / (n - 1))
-#         if mesh.is_vertex_on_boundary(node):
-#             weight = weight * w_factor_boundary
-#         point = network.node_coordinates(node)
-#         goals.append(NodePointGoal(node, target=point, weight=weight))
+# for node in spine_nodes:
+#     goals.append(NodeResidualForceGoal(node, target=0.0))
 
 # ==========================================================================
 # Combine error functions and regularizer into custom loss function
@@ -140,21 +161,13 @@ loss = Loss(error)
 # ==========================================================================
 
 network0 = network.copy()
-# network = fdm(network)
-# network_fd = network.copy()
-
-# print(f"Load path: {round(network.loadpath(), 3)}")
-
-# network = fdm(network)
 
 # ==========================================================================
 # Solve constrained form-finding problem
 # ==========================================================================
 
-optimizer = optimizer()
-
 network = constrained_fdm(network,
-                          optimizer=optimizer,
+                          optimizer=optimizer(),
                           loss=loss,
                           parameters=parameters,
                           maxiter=maxiter,
@@ -210,46 +223,30 @@ network.print_stats()
 # Visualization
 # ==========================================================================
 
-viewer = Viewer(width=1600, height=900, show_grid=False)
+if view:
+    viewer = Viewer(width=1600, height=900, show_grid=False)
 
-# modify view
-# viewer.view.camera.zoom(-35)  # number of steps, negative to zoom out
-viewer.view.camera.rotation[2] = 0.0  # set rotation around z axis to zero
+    viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
 
-# color strip edges according to sequence
-# maxs = max_step
-# cmap = ColorMap.from_mpl("viridis")
-# for i in range(maxs):
+    # best-fit network
+    viewer.add(network,
+               edgewidth=(0.001, 0.05),
+               edgecolor="force",
+               show_loads=False,
+               loadscale=1.0)
 
-#     for strip in profile_strips[i]:
-#         for edge in strip:
-#             line = Line(*network.edge_coordinates(*edge))
-#             viewer.add(line, linecolor=cmap(i, maxval=maxs), linewidth=5.)
+    # target network
+    viewer.add(network0,
+               as_wireframe=True,
+               show_points=False,
+               linewidth=1.0,
+               color=Color.grey().darkened())
 
-#         for polyedge in zip(*strip):
-#             polyline = Polyline([network.node_coordinates(n) for n in polyedge])
-#             viewer.add(polyline)
+    # draw lines between best-fit and target networks
+    for node in network.nodes():
+        pt = network.node_coordinates(node)
+        line = Line(pt, network0.node_coordinates(node))
+        viewer.add(line, color=Color.grey())
 
-# viewer.add(mesh, opacity=0.5, show_points=False)
-
-# optimized network
-viewer.add(network,
-           edgewidth=(0.01, 0.03),
-           edgecolor="force",
-           loadscale=1.0)
-
-# # reference network
-viewer.add(network0,
-           as_wireframe=True,
-           show_points=False,
-           linewidth=1.0,
-           color=Color.grey().darkened())
-
-# draw lines to target
-for node in network.nodes():
-    pt = network.node_coordinates(node)
-    line = Line(pt, network0.node_coordinates(node))
-    viewer.add(line, color=Color.grey())
-
-# show le crème
-viewer.show()
+    # show le crème
+    viewer.show()
