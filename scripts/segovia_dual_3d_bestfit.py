@@ -127,7 +127,7 @@ for edge in network.edges():
     parameter = EdgeForceDensityParameter(edge, qmin, qmax)
     parameters.append(parameter)
 
-spine_nodes = []
+# spine_nodes = []
 # for node in network.nodes_supports():
 #     x, y, z = network.node_coordinates(node)
 #     if z < 0.1:

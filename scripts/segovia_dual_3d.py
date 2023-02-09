@@ -100,7 +100,7 @@ s_start, s_end, s_exp = radians(30), radians(15), 1.0  # short spans, angle boun
 opt = LBFGSB  # optimization solver
 qmin, qmax = -15.0, -1e-1  # bounds on force densities [kN/m]
 maxiter = 20000  # maximum number of iterations
-tol = 1e-6  # 1e-9  optimization tolerance
+tol = 1e-9  # 1e-9  optimization tolerance
 parametrize_z_spine = True  # add z coordinate of spine supports as optimization parameters
 ztol = 0.05  # 0.1
 alpha = 1e-2  # 1e-2, 5e-3  alpha coefficient for L2 regularizer
@@ -111,7 +111,7 @@ weight_node_bestfit_goal = 5.0
 
 # keep horizontal projection fixed
 add_node_xy_goal = True
-weight_node_xy_goal = 3.0
+weight_node_xy_goal = 3.0  # 3.
 
 # profile edges direction goal
 add_edge_direction_profile_goal = True
@@ -132,7 +132,7 @@ edge_length_factor = 1.0
 
 # reduce reaction forces at the spine
 add_node_spine_reaction_goal = True
-weight_node_spine_reaction_goal = 10.0  # 5
+weight_node_spine_reaction_goal = 15.  # 5
 
 # spine nodes no torsion goal
 add_node_spine_notorsion_goal = True
@@ -324,6 +324,20 @@ for pkey, polyedge in mesh.polyedges(True):
         edges = list(pairwise(polyedge))
         edges_span_short.update(edges)
 
+# spine_center = Network()
+# for strip in spine_strip_edges:
+#     nodes = []
+#     for u, v in strip:
+#         x, y, z = network.edge_midpoint(u, v)
+#         node = spine_center.add_node(x=x, y=y, z=z)
+#         nodes.append(node)
+#     for u, v in pairwise(nodes):
+#         spine_center.add_edge(u, v)
+
+# filepath = os.path.join(DATA, f"tripod_network_dual_spine_center_corrected_3d.json")
+# spine_center.to_json(filepath)
+
+# raise
 # ==========================================================================
 # Updates
 # ==========================================================================
@@ -674,8 +688,6 @@ for step in range(1, max_step_sequential + 1):
                 deletable.append(edge)
         for u, v in deletable:
             _network.delete_edge(u, v)
-        # for node in spine_nodes:
-        #     _network.node_attributes(node, ["px", "py", "pz"], [0.0, 0.0, 0.0])
 
         _network = fdm(_network)
 
@@ -772,6 +784,20 @@ if export:
 
         filepath = os.path.join(DATA, f"tripod_{name}_dual_3d.json")
         datastruct.to_json(filepath)
+
+    # spine center
+    spine_center = Network()
+    for strip in spine_strip_edges:
+        nodes = []
+        for u, v in strip:
+            x, y, z = network.edge_midpoint(u, v)
+            node = spine_center.add_node(x=x, y=y, z=z)
+            nodes.append(node)
+        for u, v in pairwise(nodes):
+            spine_center.add_edge(u, v)
+
+    filepath = os.path.join(DATA, f"tripod_network_dual_spine_center_corrected_3d.json")
+    spine_center.to_json(filepath)
 
     print("\nExported JSON files!")
 
