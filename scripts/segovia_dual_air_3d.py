@@ -80,7 +80,7 @@ fofin_last = False  # form-finding last generated network with updated loads
 bestfit_last = False  # approximate shape with updated node loads
 
 # sequential form finding
-max_step_sequential = 3  # 5
+max_step_sequential = 5  # 5
 max_step_sequential_short = 3  # 3
 
 # angle bounds fs

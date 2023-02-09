@@ -88,7 +88,7 @@ pz = brick_hollow_pz + brick_solid_pz + mortar_pz
 print(f"Area load: {pz:.2f} [kN/m2] (Brick hollow:  {brick_hollow_pz:.2f} [kN/m2]\tBrick solid:  {brick_solid_pz:.2f} [kN/m2]\tMortar {mortar_pz:.2f} [kN/m2])")
 
 # spine description
-spine_height = 2.4  # [m]
+spine_height = 2.30  # [m]
 
 # optimization
 opt = SLSQP  # optimization solver
