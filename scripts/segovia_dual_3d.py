@@ -79,7 +79,7 @@ pz = brick_hollow_pz + brick_solid_pz + mortar_pz
 print(f"Area load: {pz:.2f} [kN/m2] (Brick hollow:  {brick_hollow_pz:.2f} [kN/m2]\tBrick solid:  {brick_solid_pz:.2f} [kN/m2]\tMortar {mortar_pz:.2f} [kN/m2])")
 
 # controls
-export = True
+export = False
 view = True
 
 # spine parameters
