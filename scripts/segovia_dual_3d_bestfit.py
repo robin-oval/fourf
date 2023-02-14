@@ -51,7 +51,7 @@ view = True
 
 # brick hollow properties
 brick_hollow_thickness = 0.025  # [m]
-brick_hollow_layers = 2  # [-]
+brick_hollow_layers = 2  # 2 [-]
 brick_hollow_density = 11.0  # [kN/m3]
 
 # brick solid properties
@@ -62,7 +62,7 @@ brick_solid_density = 18.0  # [kN/m3]
 # white mortar properties
 mortar_thickness = 0.012  # [m]
 mortar_layers = 2
-mortar_density = 20.0  # [kN/m3]
+mortar_density = 19.0  # [kN/m3]
 
 # vertical area load (approximated self-weight) [kN/m2]
 brick_hollow_pz = brick_hollow_density * brick_hollow_thickness * brick_hollow_layers
@@ -117,6 +117,18 @@ for fkey in mesh.faces():
     network.edge_forcedensity(edge, -0.1)
     edge = network.add_edge(b, d)
     network.edge_forcedensity(edge, -0.1)
+
+# ==========================================================================
+# Delete supported edges
+# ==========================================================================
+
+deletable = []
+for edge in network.edges():
+    u, v = edge
+    if network.is_node_support(u) and network.is_node_support(v):
+        deletable.append(edge)
+for u, v in deletable:
+    network.delete_edge(u, v)
 
 # ==========================================================================
 # Define optimization parameters

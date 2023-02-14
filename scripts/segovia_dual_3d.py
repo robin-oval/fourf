@@ -324,20 +324,6 @@ for pkey, polyedge in mesh.polyedges(True):
         edges = list(pairwise(polyedge))
         edges_span_short.update(edges)
 
-# spine_center = Network()
-# for strip in spine_strip_edges:
-#     nodes = []
-#     for u, v in strip:
-#         x, y, z = network.edge_midpoint(u, v)
-#         node = spine_center.add_node(x=x, y=y, z=z)
-#         nodes.append(node)
-#     for u, v in pairwise(nodes):
-#         spine_center.add_edge(u, v)
-
-# filepath = os.path.join(DATA, f"tripod_network_dual_spine_center_corrected_3d.json")
-# spine_center.to_json(filepath)
-
-# raise
 # ==========================================================================
 # Updates
 # ==========================================================================
@@ -458,10 +444,7 @@ for step in range(1, max_step_sequential + 1):
     parameters = []
 
     for edge in network.edges():
-        _qmax = qmax
-        if step >= 3:
-            _qmax = qmax * 1.0
-        parameter = EdgeForceDensityParameter(edge, qmin, _qmax)
+        parameter = EdgeForceDensityParameter(edge, qmin, qmax)
         parameters.append(parameter)
 
     if parametrize_z_spine and freeze_spine:
@@ -484,7 +467,6 @@ for step in range(1, max_step_sequential + 1):
     # maintain horizontal projection
     if add_node_xy_goal:
         goals_xy = []
-        # for node in nodes_step:  # NOTE: nodes added at this assembly step
         for node in network.nodes_free():
             x, y, z = network_base.node_coordinates(node)
             for goal, xy in zip((NodeXCoordinateGoal, NodeYCoordinateGoal), (x, y)):
@@ -499,7 +481,7 @@ for step in range(1, max_step_sequential + 1):
     if add_node_bestfit_goal:
         goals_bestfit = []
         for node in network.nodes_free():  # NOTE: nodes added at all previous steps
-            if node in nodes_step: # or node in hexagon:
+            if node in nodes_step:
                 continue
             xyz = network.node_coordinates(node)
             goal = NodePointGoal(node, xyz, weight_node_bestfit_goal)
@@ -514,13 +496,9 @@ for step in range(1, max_step_sequential + 1):
     if add_edge_direction_profile_goal:
         for edge in profile_edges:
             # take edge only if it belongs to the current assembly step
-            # if edge2step.get(edge, edge2step.get((edge[1], edge[0]))) != step:
             edge_step = edge2step.get(edge, edge2step.get((edge[1], edge[0])))
             if edge_step > step or edge_step == 0:
                 continue
-
-            # if edge_step != step:
-                # continue
 
             if edge in edges_span_short or (edge[1], edge[0]) in edges_span_short:
                 if edge_step > max_step_sequential_short:
@@ -547,9 +525,6 @@ for step in range(1, max_step_sequential + 1):
 
             goal = EdgeAngleGoal((u, v), vector=[0.0, 0.0, 1.0], target= pi * 0.5 - angle * factor)
             goals_edge_direction.append(goal)
-
-            # goal = EdgeDirectionGoal((u, v), target=vector, weight=weight_edge_direction_profile_goal)
-            # goals_edge_direction.append(goal)
 
             # for viz
             start = network_base.node_coordinates(u)
