@@ -28,7 +28,7 @@ from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
 from jax_fdm.optimization import LBFGSB, SLSQP, OptimizationRecorder
-from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter, NodeAnchorZParameter
+from jax_fdm.parameters import EdgeForceDensityParameter, NodeSupportXParameter, NodeSupportYParameter, NodeSupportZParameter
 from jax_fdm.parameters import NodeLoadXParameter, NodeLoadYParameter, NodeLoadZParameter
 
 from jax_fdm.goals import NodePointGoal
@@ -79,7 +79,7 @@ pz = brick_hollow_pz + brick_solid_pz + mortar_pz
 print(f"Area load: {pz:.2f} [kN/m2] (Brick hollow:  {brick_hollow_pz:.2f} [kN/m2]\tBrick solid:  {brick_solid_pz:.2f} [kN/m2]\tMortar {mortar_pz:.2f} [kN/m2])")
 
 # controls
-export = False
+export = True
 view = True
 
 # spine parameters
@@ -453,7 +453,7 @@ for step in range(1, max_step_sequential + 1):
             if node in supported_vkeys:
                 continue
             z = network.node_attribute(node, "z")
-            parameter = NodeAnchorZParameter(node, z - ztol, z + ztol)
+            parameter = NodeSupportZParameter(node, z - ztol, z + ztol)
             parameters.append(parameter)
 
 # ==========================================================================
@@ -656,6 +656,19 @@ for step in range(1, max_step_sequential + 1):
         print("Zeroing out loads on supported spine nodes...")
 
         _network = network.copy()
+        filepath = os.path.join(DATA, f"tripod_network_dual_3d_full_step_{step}.json")
+        _network.to_json(filepath)
+
+        # create mesh from last network
+        faces = network_find_cycles(_network)
+        vertices = {vkey: _network.node_coordinates(vkey) for vkey in _network.nodes()}
+        _mesh = Mesh.from_vertices_and_faces(vertices, faces)
+        _mesh.delete_face(0)
+        _mesh.cull_vertices()
+
+        filepath = os.path.join(DATA, f"tripod_mesh_dual_3d_full_step_{step}.json")
+        _mesh.to_json(filepath)
+
         deletable = []
         for edge in _network.edges():
             u, v = edge
@@ -668,6 +681,7 @@ for step in range(1, max_step_sequential + 1):
 
         filepath = os.path.join(DATA, f"tripod_network_dual_3d_step_{step}.json")
         _network.to_json(filepath)
+
         print("\nExported assembly JSON file")
 
 # ==========================================================================

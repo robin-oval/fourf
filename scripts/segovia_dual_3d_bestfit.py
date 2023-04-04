@@ -28,7 +28,7 @@ from jax_fdm.optimization import SLSQP, LBFGSB
 from jax_fdm.optimization import OptimizationRecorder
 
 from jax_fdm.parameters import EdgeForceDensityParameter
-from jax_fdm.parameters import NodeAnchorZParameter
+from jax_fdm.parameters import NodeSupportZParameter
 
 from jax_fdm.goals import NodeResidualForceGoal
 from jax_fdm.goals import NodePointGoal
@@ -122,13 +122,13 @@ for fkey in mesh.faces():
 # Delete supported edges
 # ==========================================================================
 
-deletable = []
-for edge in network.edges():
-    u, v = edge
-    if network.is_node_support(u) and network.is_node_support(v):
-        deletable.append(edge)
-for u, v in deletable:
-    network.delete_edge(u, v)
+# deletable = []
+# for edge in network.edges():
+#     u, v = edge
+#     if network.is_node_support(u) and network.is_node_support(v):
+#         deletable.append(edge)
+# for u, v in deletable:
+#     network.delete_edge(u, v)
 
 # ==========================================================================
 # Define optimization parameters
@@ -238,27 +238,27 @@ network.print_stats()
 if view:
     viewer = Viewer(width=1600, height=900, show_grid=False)
 
-    viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
+    # viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
 
     # best-fit network
     viewer.add(network,
-               edgewidth=(0.001, 0.05),
-               edgecolor="force",
+               edgewidth=(0.001, 0.1),
+               edgecolor="fd",
                show_loads=False,
                loadscale=1.0)
 
     # target network
-    viewer.add(network0,
-               as_wireframe=True,
-               show_points=False,
-               linewidth=1.0,
-               color=Color.grey().darkened())
+    # viewer.add(network0,
+    #            as_wireframe=True,
+    #            show_points=False,
+    #            linewidth=1.0,
+    #            color=Color.grey().darkened())
 
-    # draw lines between best-fit and target networks
-    for node in network.nodes():
-        pt = network.node_coordinates(node)
-        line = Line(pt, network0.node_coordinates(node))
-        viewer.add(line, color=Color.grey())
+    # # draw lines between best-fit and target networks
+    # for node in network.nodes():
+    #     pt = network.node_coordinates(node)
+    #     line = Line(pt, network0.node_coordinates(node))
+    #     viewer.add(line, color=Color.grey())
 
     # show le crème
     viewer.show()

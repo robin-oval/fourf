@@ -33,7 +33,7 @@ from jax_fdm.datastructures import FDNetwork
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
 from jax_fdm.optimization import LBFGSB, SLSQP
-from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
+from jax_fdm.parameters import EdgeForceDensityParameter, NodeSupportXParameter, NodeSupportYParameter
 from jax_fdm.parameters import NodeLoadXParameter, NodeLoadYParameter, NodeLoadZParameter
 
 from jax_fdm.goals import NodePointGoal
@@ -374,7 +374,11 @@ if export:
     print("Setting load y component back to 0.0 for export...")
     ns = network_spine.copy()
     for node in network_spine.nodes():
+        py = ns.node_attribute(node, "py")
         ns.node_attribute(node, "py", 0.0)
+        # if not network.is_node_support(node):
+            # ns.node_attribute(node, "ry", py)
+
     for name, datastruct in {"network": ns, "mesh": mesh}.items():
 
         filepath = os.path.join(DATA, f"tripod_{name}_dual_spine_3d.json")

@@ -28,7 +28,9 @@ from fourf.view import view_f4
 
 from jax_fdm.equilibrium import fdm, constrained_fdm
 from jax_fdm.optimization import LBFGSB, SLSQP
-from jax_fdm.parameters import EdgeForceDensityParameter, NodeAnchorXParameter, NodeAnchorYParameter
+from jax_fdm.parameters import EdgeForceDensityParameter
+from jax_fdm.parameters import NodeSupportXParameter
+from jax_fdm.parameters import NodeSupportYParameter
 
 from jax_fdm.goals import NodePointGoal
 from jax_fdm.goals import EdgeLengthGoal

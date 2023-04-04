@@ -32,7 +32,6 @@ from jax_fdm.optimization import SLSQP, LBFGSB
 from jax_fdm.optimization import OptimizationRecorder
 
 from jax_fdm.parameters import EdgeForceDensityParameter
-from jax_fdm.parameters import NodeAnchorZParameter
 
 from jax_fdm.goals import NodeResidualForceGoal
 from jax_fdm.goals import NodePointGoal
@@ -50,8 +49,8 @@ from fourf import DATA
 # ==========================================================================
 
 # controls
-export = True
-view = False
+export = False
+view = True
 
 # brick hollow properties
 brick_hollow_thickness = 0.025  # [m]
@@ -111,7 +110,7 @@ FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_3d.json"))
 network = FDNetwork.from_json(FILE_IN)
 
 FILE_IN = os.path.join(DATA, f"tripod_network_dual_spine_center_corrected_3d.json")
-network_spine = FDNetwork.from_json(FILE_IN)
+# network_spine = FDNetwork.from_json(FILE_IN)
 
 # ==========================================================================
 # Modify dual mesh
