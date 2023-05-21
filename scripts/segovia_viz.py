@@ -23,7 +23,7 @@ from fourf import DATA
 # ==========================================================================
 
 FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_spine_3d.json"))
-# FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_3d_full_step_5.json"))
+FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_3d_full_step_5.json"))
 network = FDNetwork.from_json(FILE_IN)
 
 FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_3d.json"))
