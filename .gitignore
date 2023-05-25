@@ -120,3 +120,6 @@ docs/api/generated/
 conda.recipe/
 
 data/*.json
+
+*.pdf
+*.ai
