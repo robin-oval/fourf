@@ -1,48 +1,49 @@
 # the essentials
 import os
+from math import fabs
+
+# scientific computing
 import numpy as np
 from scipy.spatial.distance import directed_hausdorff
-
-from math import fabs
-from itertools import combinations
 
 # compas
 from compas.colors import Color
 from compas.geometry import Line
-from compas.colors import Color, ColorMap
-from compas.datastructures import Mesh, mesh_weld
-from compas.geometry import Line, Polyline, distance_point_point, length_vector, length_vector_xy, sum_vectors, cross_vectors, rotate_points, bounding_box
-from compas.geometry import angle_vectors, project_point_plane
-from compas.geometry import add_vectors, subtract_vectors, scale_vector, normalize_vector, dot_vectors
+from compas.geometry import add_vectors
+from compas.geometry import scale_vector
+from compas.geometry import normalize_vector
+from compas.geometry import dot_vectors
 from compas.utilities import pairwise
 
+# quadness
 from compas_quad.datastructures import QuadMesh
 from compas_quad.coloring import quad_mesh_polyedge_2_coloring
 
+# construction stability
+from fourf import DATA
 from fourf.support import polyedge_types
 from fourf.sequence import quadmesh_polyedge_assembly_sequence
 
 # jax fdm
 from jax_fdm.datastructures import FDNetwork
 
-from jax_fdm.equilibrium import fdm
 from jax_fdm.equilibrium import constrained_fdm
 
-from jax_fdm.optimization import SLSQP, LBFGSB
-from jax_fdm.optimization import OptimizationRecorder
+from jax_fdm.optimization import LBFGSB
 
 from jax_fdm.parameters import EdgeForceDensityParameter
+from jax_fdm.parameters import NodeSupportXParameter
+from jax_fdm.parameters import NodeSupportYParameter
 
-from jax_fdm.goals import NodeResidualForceGoal
 from jax_fdm.goals import NodePointGoal
+from jax_fdm.goals import EdgeLengthGoal
 
-from jax_fdm.losses import RootMeanSquaredError, SquaredError, MeanSquaredError, MeanAbsoluteError, AbsoluteError, PredictionError
+from jax_fdm.losses import SquaredError
+from jax_fdm.losses import L2Regularizer
 from jax_fdm.losses import Loss
 
 from jax_fdm.visualization import Viewer
 
-# fourf
-from fourf import DATA
 
 # ==========================================================================
 # Parameters
@@ -52,23 +53,29 @@ from fourf import DATA
 export = False
 view = True
 
+# network modifiers
+add_bracing = True
+add_bracing_to_spine = True
+delete_supported_edges = False
+offset_normal = 0.0  # 0.025 / 2 (to offset mesh based on the normal of final geometry)
+
 # brick hollow properties
 brick_hollow_thickness = 0.025  # [m]
-brick_hollow_layers = 1  # 2 [-]
+brick_hollow_layers = 2  # 2 [-]
 brick_hollow_density = 11.0  # [kN/m3]
 
 # brick solid properties
 brick_solid_thickness = 0.04  # [m]
-brick_solid_layers = 1  # [-]
+brick_solid_layers = 1  # 1 [-]
 brick_solid_density = 18.0  # [kN/m3]
 
 # white mortar properties
-mortar_thickness = 0.012  # [m]
-mortar_layers = 1  # 2
-mortar_density = 19.0  # [kN/m3]
+mortar_thickness = 0.012  # 0.015, [m]
+mortar_layers = 2  # 2
+mortar_density = 19.0  # 19 [kN/m3]
 
-# super dead load
-super_dead_pz = 0.5  # [kN/m2]
+# Additional dead load
+super_dead_pz = 0.0  # [kN/m2]
 
 # vertical area load (approximated self-weight) [kN/m2]
 brick_hollow_pz = brick_hollow_density * brick_hollow_thickness * brick_hollow_layers
@@ -83,21 +90,24 @@ start_step = 1
 max_step_sequential = 5  # 5
 max_step_sequential_short = 3  # 3
 
-# network modifiers
-offset_normal = 0.0  # 0.025 / 2.
-add_bracing = True
-delete_supported_edges = True
-
 # optimization
-qmin, qmax = -20.0, -0.0  # min and max force densities
+qmin, qmax = -20.0, -1e-8  # min and max force densities
 optimizer = LBFGSB   # the optimization algorithm
-error = SquaredError  # error term in the loss function
+error_fn = SquaredError  # error term in the loss function
 maxiter = 10000  # optimizer maximum iterations
-tol = 1e-6  # optimizer tolerance
+tol = 1e-8  # optimizer tolerance
 
-# point goal weights
-w_xy = 1.0
-w_z = 1.0
+# update force densities of original network after every optimization step
+update_qs_after_optimization = True
+
+# add supports to the optimization parameters list
+parametrize_supports = False
+xytol = 0.025  # the amount supports can wiggle on x and y from their current position
+
+weight_goals_per_step = True  # prioritize xyz matching of vertices at current step
+alpha_xyz = 1.0  # target xyz goal
+alpha_length = 0.0  # target lengths goal
+alpha_reg = 0.0  # regularizer
 
 # ==========================================================================
 # Import target mesh
@@ -108,9 +118,6 @@ mesh = QuadMesh.from_json(FILE_IN)
 
 FILE_IN = os.path.abspath(os.path.join(DATA, "tripod_network_dual_3d.json"))
 network = FDNetwork.from_json(FILE_IN)
-
-FILE_IN = os.path.join(DATA, f"tripod_network_dual_spine_center_corrected_3d.json")
-# network_spine = FDNetwork.from_json(FILE_IN)
 
 # ==========================================================================
 # Modify dual mesh
@@ -133,7 +140,6 @@ for vertices in mesh.vertices_on_boundaries():
     if len(vertices) == 7:
         mesh.add_face(vertices[:-1])
 
-# mesh = mesh_weld(mesh)
 mesh.collect_polyedges()
 
 # ==========================================================================
@@ -320,12 +326,23 @@ if add_bracing:
     print("\nAdding bracing edges")
     for fkey in mesh.faces():
         vertices = mesh.face_vertices(fkey)
+
+        # skip faces in spine
+        if not add_bracing_to_spine:
+            if all(vkey2step[vkey] == 0 for vkey in vertices):
+                continue
+
         if len(vertices) != 4:
             continue
+
         a, b, c, d = vertices
+
         edge = network.add_edge(a, c)
+        network.edge_attribute(edge, "type", "bracing")
         network.edge_forcedensity(edge, -0.1)
+
         edge = network.add_edge(b, d)
+        network.edge_attribute(edge, "type", "bracing")
         network.edge_forcedensity(edge, -0.1)
 
 # ==========================================================================
@@ -382,20 +399,49 @@ for step in range(start_step, max_step_sequential + 1):
         parameter = EdgeForceDensityParameter(edge, qmin, qmax)
         parameters.append(parameter)
 
+    if parametrize_supports:
+
+        print("\nAdding supports' XY coordinates as optimization parameters")
+        for node in network.nodes_supports():
+            node_step = vkey2step[node]
+            if node_step == 0:
+                continue
+            else:
+                x, y, _ = network0.node_coordinates(node)
+                parameter = NodeSupportXParameter(node, x-xytol, x+xytol)
+                parameters.append(parameter)
+                parameter = NodeSupportYParameter(node, y-xytol, y+xytol)
+                parameters.append(parameter)
+
+
 # ==========================================================================
 # Define goals
 # ==========================================================================
 
-    goals = []
+    goals_xyz = []
     for node in network.nodes_free():
+
         point = network0.node_coordinates(node)
-        goals.append(NodePointGoal(node, target=point))
+        weight_xyz = 1.0
+
+        if weight_goals_per_step:
+            node_step = vkey2step[node]
+            weight_xyz = node_step / step
+
+        goals_xyz.append(NodePointGoal(node, target=point, weight=weight_xyz))
+
+    goals_length = []
+    for edge in network.edges():
+        length = network0.edge_length(*edge)
+        goals_length.append(EdgeLengthGoal(edge, target=length))
 
 # ==========================================================================
 # Combine error functions and regularizer into custom loss function
 # ==========================================================================
 
-    loss = Loss(error(goals))
+    loss = Loss(error_fn(goals_xyz, alpha_xyz),
+                error_fn(goals_length, alpha_length),
+                L2Regularizer(alpha_reg))
 
 # ==========================================================================
 # Solve constrained form-finding problem
@@ -415,54 +461,67 @@ for step in range(start_step, max_step_sequential + 1):
     network.print_stats()
 
 # ==========================================================================
+# Update force densities
+# ==========================================================================
+
+    if update_qs_after_optimization:
+        for edge in network.edges():
+            q = network.edge_forcedensity(edge)
+            network0.edge_forcedensity(edge, q)
+
+# ==========================================================================
 # Hausdorff distance
 # ==========================================================================
 
-    U = np.array([network0.node_coordinates(node) for node in network.nodes()])
-    V = np.array([network.node_coordinates(node) for node in network.nodes()])
+    U = np.array([network0.node_coordinates(node) for node in network.nodes_free()])
+    V = np.array([network.node_coordinates(node) for node in network.nodes_free()])
     directed_u = directed_hausdorff(U, V)[0]
     directed_v = directed_hausdorff(V, U)[0]
     hausdorff = max(directed_u, directed_v)
 
-    print(f"\nHausdorff distances: U: {directed_u:.2f}\tV: {directed_v:.2f}\tUV: {round(hausdorff, 2)}")
+    print(f"\nHausdorff distances: U: {directed_u:.3f}\tV: {directed_v:.3f}\tUV: {round(hausdorff, 3)}")
 
 # ==========================================================================
 # Export JSON
 # ==========================================================================
 
     if export:
-        filepath = os.path.join(DATA, f"tripod_network_dual_bestfit_3d_step_{step}.json")
+        filename = f"tripod_network_dual_bestfit_3d_step_{step}.json"
+        if add_bracing:
+            filename = f"tripod_network_dual_bestfit_braced_3d_step_{step}.json"
+        filepath = os.path.join(DATA, filename)
         network.to_json(filepath)
-        print("\nExported network JSON file!")
+        print(f"\nExported network JSON file to {filepath}!")
 
 # ==========================================================================
 # Visualization
 # ==========================================================================
 
-if view:
-    viewer = Viewer(width=1600, height=900, show_grid=False)
+    if view:
+        print("\nViewing")
+        viewer = Viewer(width=1600, height=900, show_grid=False)
 
-    viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to black
+        viewer.view.color = (0.1, 0.1, 0.1, 1)  # change background to dark gray
 
-    # best-fit network
-    viewer.add(network,
-               edgewidth=(0.001, 0.05),
-               edgecolor="force",
-               show_loads=True,
-               loadscale=1.0)
+        # best-fit network
+        viewer.add(network,
+                   edgewidth=(0.001, 0.05),
+                   edgecolor="force",
+                   show_loads=True,
+                   loadscale=2.0)
 
-    # target network
-    viewer.add(network0,
-               as_wireframe=True,
-               show_points=False,
-               linewidth=1.0,
-               color=Color.grey().darkened())
+        # target network
+        viewer.add(network0,
+                   as_wireframe=True,
+                   show_points=False,
+                   linewidth=1.0,
+                   color=Color.white().darkened())
 
-    # draw lines between best-fit and target networks
-    for node in network.nodes():
-        pt = network.node_coordinates(node)
-        line = Line(pt, network0.node_coordinates(node))
-        viewer.add(line, color=Color.grey())
+        # draw lines between best-fit and target networks
+        for node in network.nodes():
+            pt = network.node_coordinates(node)
+            line = Line(pt, network0.node_coordinates(node))
+            viewer.add(line, color=Color.grey())
 
-    # show le crème
-    viewer.show()
+        # show le crème
+        viewer.show()
